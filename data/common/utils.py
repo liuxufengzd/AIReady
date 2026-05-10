@@ -1,9 +1,9 @@
 from langchain_google_genai import ChatGoogleGenerativeAI
-from core.common import const
+from data.common import const
 from pathlib import Path
 import base64
 import mimetypes
-from core.entity.matadata import Metadata
+from data.matadata import Metadata
 
 
 def get_llm(more_thinking: bool = False, temperature: float = 1.0):

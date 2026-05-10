@@ -6,7 +6,7 @@ from typing import Type
 
 
 @dataclass
-class ExtractContext:
+class Context:
     project: str
     source: Path
     sink: Path

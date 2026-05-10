@@ -10,27 +10,23 @@ class Metadata(BaseModel):
     extension: SerializeAsAny[BaseModel] | None = Field(
         default=None, description="The extension of the file"
     )
-
-
-# Image
-class ImageMetadata(Metadata):
     semantic_text: str = Field(
-        description="Text of the image, used for semantic search"
+        default=None, description="Summary of the file, used for semantic search"
     )
-    keyword_text: str = Field(description="Text of the image, used for keyword search")
+    keyword_text: str = Field(
+        default=None, description="Keywords of the file, used for keyword search"
+    )
 
 
-# PDF
-class PDFMetadata(Metadata):
-    semantic_text: str = Field(description="Text of the PDF, used for semantic search")
-    keyword_text: str = Field(description="Text of the PDF, used for keyword search")
-
-
-# PPTX
+# PPTX Metadata
 class PptxPage(BaseModel):
     page_num: int = Field(description="The page number of the PPTX file")
-    semantic_text: str = Field(description="Text of the page, used for semantic search")
-    keyword_text: str = Field(description="Text of the page, used for keyword search")
+    semantic_text: str = Field(
+        description="Summary of the page, used for semantic search"
+    )
+    keyword_text: str = Field(
+        description="Keywords of the page, used for keyword search"
+    )
 
 
 class PptxMetadata(Metadata):
