@@ -2,7 +2,7 @@
 
 from typing import TypedDict
 
-from data.common.logger import get_logger
+from common.logger import get_logger
 from langgraph.types import Command, RetryPolicy
 from langgraph.graph import StateGraph, END, START
 from langgraph.runtime import Runtime
@@ -17,8 +17,7 @@ from pptxtoimages.tools import PPTXToImageConverter
 from data.extractor import Extractor
 from data.matadata import (
     Metadata,
-    PptxMetadata,
-    PptxPage,
+    Page,
 )
 from pathlib import Path
 import tempfile
@@ -39,7 +38,7 @@ class State(TypedDict):
     # parameters controlled by the system
     text_for_keyword_search: str
     text_for_semantic_search: str
-    metadata: Metadata
+    meta_pages: list[Page]
     meta_extension: BaseModel
     temp_dir: Path
     is_ppt: bool
@@ -83,22 +82,14 @@ class Graph:
         return {"text_for_keyword_search": keyword, "text_for_semantic_search": summary}
 
     async def _extract_ppt(self, state: State, runtime: Runtime[Context]) -> dict:
-        source = runtime.context.source
-        project = runtime.context.project
-
         # Convert PPTX to images
         temp_dir = tempfile.mkdtemp()
         image_files = PPTXToImageConverter(
-            pptx_path=source, output_dir=temp_dir
+            pptx_path=runtime.context.source, output_dir=temp_dir
         ).convert()
         logger.info(f"Converted {len(image_files)} slides to images to '{temp_dir}'")
 
-        metadata = PptxMetadata(
-            project=project,
-            file_name=source.name,
-            mime_type=mimetypes.guess_type(source)[0],
-            size=source.stat().st_size,
-        )
+        meta_pages = []
         previous_summary = ""
         for page_num, image_file in enumerate(image_files, start=1):
             logger.info(f"Processing slide page {page_num}/{len(image_files)}")
@@ -110,8 +101,8 @@ class Graph:
                 ocr_text = await self.extractor.extract_with_ocr(
                     Path(image_file), runtime.context.languages
                 )
-                metadata.pages.append(
-                    PptxPage(
+                meta_pages.append(
+                    Page(
                         page_num=page_num,
                         semantic_text=ocr_text,
                         keyword_text=ocr_text,
@@ -121,19 +112,19 @@ class Graph:
                 continue
 
             # Extract text with VLM
-            context = f"This is one page of a PowerPoint presentation. Topic: {Path(source).stem}. Content of it's previous page: {previous_summary}"
+            context = f"This is one page of a PowerPoint presentation. Topic: {Path(runtime.context.source).stem}. Content of it's previous page: {previous_summary}"
             summary = previous_summary = await self.extractor.extract_summary_with_llm(
                 Path(image_file), context=context
             )
             keyword = await self.extractor.extract_keyword_with_llm(Path(image_file))
-            metadata.pages.append(
-                PptxPage(
+            meta_pages.append(
+                Page(
                     page_num=page_num,
                     semantic_text=summary,
                     keyword_text=keyword,
                 )
             )
-        return {"metadata": metadata, "temp_dir": Path(temp_dir)}
+        return {"meta_pages": meta_pages, "temp_dir": Path(temp_dir)}
 
     async def _extract_metadata_extension(
         self, state: State, runtime: Runtime[Context]
@@ -170,22 +161,16 @@ class Graph:
 
         # Store the metadata
         logger.info(f"Storing metadata for {source}")
-        if state.get("metadata"):
-            metadata = state["metadata"]
-        else:
-            metadata = Metadata(
-                project=project,
-                mime_type=mimetypes.guess_type(source)[0],
-                size=source.stat().st_size,
-                file_name=source.name,
-                semantic_text=state["text_for_semantic_search"],
-                keyword_text=state["text_for_keyword_search"],
-            )
-
-        if state.get("meta_extension") is not None:
-            metadata = metadata.model_copy(
-                update={"extension": state["meta_extension"]}
-            )
+        metadata = Metadata(
+            project=project,
+            mime_type=mimetypes.guess_type(source)[0],
+            size=source.stat().st_size,
+            file_name=source.name,
+            extension=state.get("meta_extension", None),
+            semantic_text=state.get("text_for_semantic_search", None),
+            keyword_text=state.get("text_for_keyword_search", None),
+            pages=state.get("meta_pages", None),
+        )
         store_metadata(project, source.name, metadata)
 
         # Sink the raw file to the mark
@@ -198,6 +183,7 @@ class Graph:
                 for file in state["temp_dir"].glob("*.png"):
                     shutil.copy(file, target_dir / file.name)
             finally:
+                logger.info(f"Removing temporary directory: {state['temp_dir']}")
                 shutil.rmtree(state["temp_dir"])
         else:
             sink.parent.mkdir(parents=True, exist_ok=True)

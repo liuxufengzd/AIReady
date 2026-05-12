@@ -1,0 +1,5 @@
+wi-fi, wifi, wireless internet
+tv, television
+fridge, refrigerator
+parking, car park
+supermarket, market

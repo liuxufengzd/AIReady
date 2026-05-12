@@ -35,4 +35,4 @@ def store_metadata(project: str, file_name: str, metadata: Metadata) -> None:
         Path(f"store/nosql/{project}").mkdir(parents=True, exist_ok=True)
     metadata_path = Path(f"store/nosql/{project}/{Path(file_name).stem}.json")
     with open(metadata_path, "w", encoding="utf-8") as f:
-        f.write(metadata.model_dump_json(indent=4))
+        f.write(metadata.model_dump_json(indent=4, exclude_none=True))

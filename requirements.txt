@@ -1,5 +1,8 @@
 kreuzberg==4.9.4
 langchain==1.2.0
+langchain-chroma==1.1.0
 langchain-google-genai==4.2.2
 python-dotenv==1.1.1
 pptxtoimages==0.1.14
+elasticsearch[async]==9.4.0
+mxbai-rerank

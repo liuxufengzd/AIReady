@@ -1,26 +1,9 @@
 from pydantic import BaseModel, Field, SerializeAsAny
 
 
-# Base Metadata
-class Metadata(BaseModel):
-    project: str = Field(description="The project name of the file")
-    mime_type: str = Field(description="The MIME type of the file")
-    size: int = Field(description="The size of the file")
-    file_name: str = Field(description="The name of the file")
-    extension: SerializeAsAny[BaseModel] | None = Field(
-        default=None, description="The extension of the file"
-    )
-    semantic_text: str = Field(
-        default=None, description="Summary of the file, used for semantic search"
-    )
-    keyword_text: str = Field(
-        default=None, description="Keywords of the file, used for keyword search"
-    )
-
-
-# PPTX Metadata
-class PptxPage(BaseModel):
-    page_num: int = Field(description="The page number of the PPTX file")
+# Page information definition
+class Page(BaseModel):
+    page_num: int = Field(description="The page number of the page")
     semantic_text: str = Field(
         description="Summary of the page, used for semantic search"
     )
@@ -29,19 +12,35 @@ class PptxPage(BaseModel):
     )
 
 
-class PptxMetadata(Metadata):
-    pages: list[PptxPage] = Field(
-        default_factory=list, description="A list of pages in the PPTX file"
+# Metadata definition
+class Metadata(BaseModel):
+    project: str = Field(description="The project name of the file")
+    mime_type: str = Field(description="The MIME type of the file")
+    size: int = Field(description="The size of the file")
+    file_name: str = Field(description="The name of the file")
+    extension: SerializeAsAny[BaseModel] | None = Field(
+        default=None, description="The extension of the file"
+    )
+    semantic_text: str | None = Field(
+        default=None, description="Summary of the file, used for semantic search"
+    )
+    keyword_text: str | None = Field(
+        default=None, description="Keywords of the file, used for keyword search"
+    )
+    pages: list[Page] | None = Field(
+        default=None, description="A list of pages in the file"
     )
 
 
 # Metadata extensions
 class IHIMachineReport(BaseModel):
-    customer_name: str = Field(default=None, description="お客さま名")
-    machine_group: str = Field(default=None, description="機種")
-    machine_type: str = Field(default=None, description="型式")
-    manufacturing_factory: str = Field(default=None, description="製造工場")
-    non_conforming_work: str = Field(default=None, description="不適合発生工事")
-    non_conforming_work_name: str = Field(default=None, description="不適合工事名称")
-    work_classification: str = Field(default=None, description="工事種類")
-    date: str = Field(default=None, description="発生日")
+    customer_name: str = Field(default="unknown", description="お客さま名")
+    machine_group: str = Field(default="unknown", description="機種")
+    machine_type: str = Field(default="unknown", description="型式")
+    manufacturing_factory: str = Field(default="unknown", description="製造工場")
+    non_conforming_work: str = Field(default="unknown", description="不適合発生工事")
+    non_conforming_work_name: str = Field(
+        default="unknown", description="不適合工事名称"
+    )
+    work_classification: str = Field(default="unknown", description="工事種類")
+    date: str = Field(default="unknown", description="発生日")

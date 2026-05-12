@@ -9,7 +9,7 @@ from data.common.prompts import PROMPT_FOR_KEYWORD, PROMPT_FOR_SEMANTIC
 from langchain_core.messages import HumanMessage, AIMessage
 from data.common.utils import read_pdf, read_image
 
-from data.common.logger import get_logger
+from common.logger import get_logger
 from data.common import const
 
 logger = get_logger(__name__)
