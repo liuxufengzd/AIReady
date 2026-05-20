@@ -170,4 +170,5 @@ out/
 
 # store
 store/
-demo/
+compare/
+output/

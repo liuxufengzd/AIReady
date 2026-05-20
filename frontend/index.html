@@ -1,0 +1,975 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Data Extraction Workflow</title>
+
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+
+  <!-- React 18 (production UMD) -->
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+
+  <!-- Babel Standalone (for JSX in-browser) -->
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <!-- Marked.js for markdown rendering -->
+  <script src="https://cdn.jsdelivr.net/npm/marked@13/marked.min.js"></script>
+
+  <style>
+    /* Loading spinner */
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .spinner { animation: spin 0.9s linear infinite; }
+
+    /* Markdown preview styles */
+    .md h1 { font-size: 1.35em; font-weight: 700; margin: 0.8em 0 0.4em; color: #1e293b; }
+    .md h2 { font-size: 1.15em; font-weight: 600; margin: 0.8em 0 0.4em; color: #1e293b; border-bottom: 1px solid #e2e8f0; padding-bottom: 0.25em; }
+    .md h3 { font-size: 1.05em; font-weight: 600; margin: 0.6em 0 0.3em; color: #334155; }
+    .md h4, .md h5, .md h6 { font-size: 0.95em; font-weight: 600; margin: 0.5em 0 0.25em; color: #475569; }
+    .md p { margin: 0.5em 0; line-height: 1.65; color: #334155; }
+    .md ul { list-style: disc; margin: 0.4em 0 0.4em 1.4em; }
+    .md ol { list-style: decimal; margin: 0.4em 0 0.4em 1.4em; }
+    .md li { margin: 0.2em 0; line-height: 1.55; color: #334155; }
+    .md code { background: #f1f5f9; color: #1d4ed8; padding: 0.1em 0.35em; border-radius: 4px; font-family: 'Courier New', monospace; font-size: 0.83em; }
+    .md pre { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 0.9em 1.1em; overflow-x: auto; margin: 0.6em 0; }
+    .md pre code { background: none; color: #334155; padding: 0; }
+    .md table { border-collapse: collapse; width: 100%; margin: 0.6em 0; font-size: 0.88em; }
+    .md th, .md td { border: 1px solid #e2e8f0; padding: 0.45em 0.8em; text-align: left; }
+    .md th { background: #f8fafc; font-weight: 600; color: #475569; }
+    .md blockquote { border-left: 3px solid #94a3b8; padding: 0.3em 0.9em; color: #64748b; background: #f8fafc; border-radius: 0 6px 6px 0; margin: 0.5em 0; }
+    .md a { color: #2563eb; text-decoration: underline; }
+    .md strong { font-weight: 700; color: #1e293b; }
+    .md em { font-style: italic; }
+    .md hr { border: none; border-top: 1px solid #e2e8f0; margin: 1em 0; }
+    .md img { max-width: 100%; height: auto; border-radius: 4px; }
+
+    /* Scrollbar */
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: #f1f5f9; border-radius: 3px; }
+    ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
+    ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+
+    /* Input focus ring */
+    input:focus, textarea:focus, select:focus { outline: none; }
+  </style>
+</head>
+<body class="bg-slate-50 min-h-screen antialiased">
+  <div id="root"></div>
+
+  <script type="text/babel">
+    "use strict";
+    const { useState, useMemo, useCallback, useEffect } = React;
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // API LAYER
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    async function apiPost(baseUrl, path, queryParams, body) {
+      const base = baseUrl.replace(/\/+$/, "");
+      const url = new URL(base + path);
+
+      if (queryParams) {
+        for (const [k, v] of Object.entries(queryParams)) {
+          if (v === null || v === undefined) continue;
+          if (Array.isArray(v)) {
+            v.forEach((item) => url.searchParams.append(k, item));
+          } else {
+            url.searchParams.set(k, String(v));
+          }
+        }
+      }
+
+      const opts = { method: "POST" };
+      if (body !== undefined) {
+        opts.headers = { "Content-Type": "application/json" };
+        opts.body = JSON.stringify(body);
+      }
+
+      let resp;
+      try {
+        resp = await fetch(url.toString(), opts);
+      } catch (e) {
+        throw new Error(
+          `Network error — is the API server running at ${base}?\n${e.message}`
+        );
+      }
+
+      if (!resp.ok) {
+        let detail = "";
+        try {
+          const j = await resp.json();
+          detail = j.detail ? (Array.isArray(j.detail) ? JSON.stringify(j.detail, null, 2) : String(j.detail)) : JSON.stringify(j);
+        } catch {
+          detail = await resp.text();
+        }
+        throw new Error(`[${resp.status}] ${detail}`);
+      }
+
+      const text = await resp.text();
+      return text.trim() ? JSON.parse(text) : null;
+    }
+
+    function startExtraction(base, project, source, languages) {
+      return apiPost(base, "/start_extraction", { project, source, languages });
+    }
+
+    function continueExtraction(base, sessionId, approved, text, requireChunking) {
+      const params = {
+        session_id: sessionId,
+        approved: String(approved),
+        require_chunking: String(requireChunking),
+      };
+      if (approved && text != null) params.text = text;
+      return apiPost(base, "/continue_extraction", params);
+    }
+
+    function postExtraction(base, sessionId, finalAnswer) {
+      return apiPost(base, "/post_extraction", { session_id: sessionId }, finalAnswer);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // SHARED UI PRIMITIVES
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    function Spinner({ size = 40, color = "#2563eb" }) {
+      return (
+        <div
+          className="spinner"
+          style={{
+            width: size,
+            height: size,
+            borderRadius: "50%",
+            border: `${size / 10}px solid #e2e8f0`,
+            borderTopColor: color,
+          }}
+        />
+      );
+    }
+
+    function LoadingOverlay({ msg }) {
+      return (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(15,23,42,0.45)",
+            backdropFilter: "blur(6px)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 100,
+          }}
+        >
+          <div className="bg-white rounded-2xl shadow-2xl px-10 py-8 flex flex-col items-center gap-5 max-w-sm mx-4">
+            <Spinner size={48} />
+            <div className="text-center">
+              <p className="text-slate-700 font-semibold text-base">{msg}</p>
+              <p className="text-slate-400 text-xs mt-1">Please wait…</p>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    function Alert({ type = "error", msg, onClose }) {
+      if (!msg) return null;
+      const styles = {
+        error: "bg-red-50 border-red-200 text-red-800",
+        warn:  "bg-amber-50 border-amber-200 text-amber-800",
+        info:  "bg-blue-50 border-blue-200 text-blue-800",
+        success: "bg-green-50 border-green-200 text-green-800",
+      };
+      const icons = { error: "⚠", warn: "⚡", info: "ℹ", success: "✓" };
+      return (
+        <div className={`mb-4 p-3.5 rounded-xl border flex items-start gap-2.5 ${styles[type]}`}>
+          <span className="flex-shrink-0 font-bold mt-0.5">{icons[type]}</span>
+          <pre className="flex-1 text-xs whitespace-pre-wrap break-all font-sans">{msg}</pre>
+          {onClose && (
+            <button
+              onClick={onClose}
+              className="flex-shrink-0 opacity-50 hover:opacity-100 transition-opacity ml-1"
+            >
+              ✕
+            </button>
+          )}
+        </div>
+      );
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // STEP PROGRESS BAR
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    const STEPS = [
+      { id: "setup",   label: "Setup",          desc: "Enter details" },
+      { id: "content", label: "Content Review", desc: "Review extracted text" },
+      { id: "final",   label: "Final Review",   desc: "Review search texts" },
+      { id: "success", label: "Complete",        desc: "Done" },
+    ];
+
+    function StepBar({ step, slideNum }) {
+      const cur = STEPS.findIndex((s) => s.id === step);
+      return (
+        <div className="mb-8">
+          <div className="flex items-center justify-between relative">
+            {/* connector line */}
+            <div
+              className="absolute top-5 left-5 right-5 h-0.5 bg-slate-200"
+              style={{ zIndex: 0 }}
+            />
+            <div
+              className="absolute top-5 left-5 h-0.5 bg-blue-500 transition-all duration-500"
+              style={{ width: cur > 0 ? `${(cur / (STEPS.length - 1)) * 100}%` : "0%", zIndex: 1 }}
+            />
+
+            {STEPS.map((s, i) => {
+              const isDone = i < cur;
+              const isActive = i === cur;
+              return (
+                <div key={s.id} className="flex flex-col items-center relative" style={{ zIndex: 2 }}>
+                  <div
+                    className={`w-10 h-10 rounded-full flex items-center justify-center font-bold text-sm transition-all duration-300 ${
+                      isDone
+                        ? "bg-blue-500 text-white shadow-md shadow-blue-200"
+                        : isActive
+                        ? "bg-blue-600 text-white ring-4 ring-blue-100 shadow-lg shadow-blue-200"
+                        : "bg-white text-slate-400 border-2 border-slate-200"
+                    }`}
+                  >
+                    {isDone ? "✓" : i + 1}
+                  </div>
+                  <div className="mt-2 text-center hidden sm:block">
+                    <p
+                      className={`text-xs font-semibold ${
+                        isActive ? "text-blue-600" : isDone ? "text-blue-500" : "text-slate-400"
+                      }`}
+                    >
+                      {s.label}
+                    </p>
+                    <p className="text-[10px] text-slate-400 mt-0.5">{s.desc}</p>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Current step label for mobile */}
+          <div className="sm:hidden text-center mt-3">
+            <p className="text-sm font-semibold text-blue-600">{STEPS[cur]?.label}</p>
+            <p className="text-xs text-slate-400">{STEPS[cur]?.desc}</p>
+          </div>
+
+          {/* Slide indicator for PPT */}
+          {slideNum > 0 && (
+            <div className="flex justify-center mt-4">
+              <span className="px-4 py-1.5 bg-amber-100 text-amber-700 border border-amber-200 rounded-full text-xs font-bold tracking-wide">
+                📄 Processing Slide {slideNum}
+              </span>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // STEP 1 — SETUP
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    function SetupStep({ apiBase, setApiBase, onSubmit }) {
+      const [project, setProject] = useState("");
+      const [source, setSource] = useState("");
+      const [langs, setLangs] = useState("en, ja");
+      const [showAdv, setShowAdv] = useState(false);
+      const [err, setErr] = useState("");
+
+      const submit = async (e) => {
+        e.preventDefault();
+        setErr("");
+        if (!project.trim()) { setErr("Project name is required."); return; }
+        if (!source.trim())  { setErr("Source path is required."); return; }
+        const languages = langs.split(",").map((s) => s.trim()).filter(Boolean);
+        if (languages.length === 0) { setErr("At least one language is required."); return; }
+        try {
+          await onSubmit(project.trim(), source.trim(), languages);
+        } catch (e) {
+          setErr(e.message);
+        }
+      };
+
+      return (
+        <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
+          {/* Card header */}
+          <div className="px-8 py-6 bg-gradient-to-br from-blue-50 to-indigo-50 border-b border-slate-100">
+            <div className="flex items-center gap-3 mb-1">
+              <div className="w-8 h-8 bg-blue-600 rounded-lg grid place-items-center text-white text-sm">
+                📂
+              </div>
+              <h2 className="text-xl font-bold text-slate-800">New Extraction Job</h2>
+            </div>
+            <p className="text-slate-500 text-sm ml-11">
+              Specify the project name and document path to start the HITL extraction pipeline.
+            </p>
+          </div>
+
+          <div className="p-8">
+            <Alert type="error" msg={err} onClose={() => setErr("")} />
+
+            <form onSubmit={submit} className="space-y-5">
+              {/* Project Name */}
+              <div>
+                <label className="block text-sm font-semibold text-slate-700 mb-1.5">
+                  Project Name <span className="text-red-500">*</span>
+                </label>
+                <input
+                  type="text"
+                  value={project}
+                  onChange={(e) => setProject(e.target.value)}
+                  placeholder="e.g. machine-reports-2025"
+                  className="w-full px-4 py-2.5 border border-slate-300 rounded-xl text-sm ring-0 focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
+                />
+              </div>
+
+              {/* Source Path */}
+              <div>
+                <label className="block text-sm font-semibold text-slate-700 mb-1.5">
+                  Source Path <span className="text-red-500">*</span>
+                </label>
+                <input
+                  type="text"
+                  value={source}
+                  onChange={(e) => setSource(e.target.value)}
+                  placeholder="store/s3/raw/report.pdf"
+                  className="w-full px-4 py-2.5 border border-slate-300 rounded-xl text-sm font-mono focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
+                />
+                <p className="text-xs text-slate-400 mt-1.5">
+                  Supported formats: <code className="text-slate-500">.pdf .pptx .jpg .jpeg .png</code>
+                </p>
+              </div>
+
+              {/* Advanced settings */}
+              <div className="border border-slate-200 rounded-xl overflow-hidden">
+                <button
+                  type="button"
+                  onClick={() => setShowAdv(!showAdv)}
+                  className="w-full px-4 py-3 flex items-center justify-between text-sm hover:bg-slate-50 transition-colors"
+                >
+                  <span className="font-semibold text-slate-600">⚙ Advanced Settings</span>
+                  <span className="text-slate-400 text-xs">{showAdv ? "▴ collapse" : "▾ expand"}</span>
+                </button>
+                {showAdv && (
+                  <div className="px-4 pb-5 pt-2 bg-slate-50 border-t border-slate-100 space-y-4">
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-600 mb-1.5">
+                        API Base URL
+                      </label>
+                      <input
+                        type="text"
+                        value={apiBase}
+                        onChange={(e) => setApiBase(e.target.value)}
+                        className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm font-mono bg-white focus:ring-2 focus:ring-blue-400 focus:border-transparent transition-all"
+                      />
+                      <p className="text-xs text-slate-400 mt-1">
+                        Backend server URL (e.g. <code>http://localhost:8000</code>)
+                      </p>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-600 mb-1.5">
+                        OCR Languages (comma-separated)
+                      </label>
+                      <input
+                        type="text"
+                        value={langs}
+                        onChange={(e) => setLangs(e.target.value)}
+                        className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm font-mono bg-white focus:ring-2 focus:ring-blue-400 focus:border-transparent transition-all"
+                      />
+                      <p className="text-xs text-slate-400 mt-1">Default: <code>en, ja</code></p>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <button
+                type="submit"
+                className="w-full py-3.5 bg-blue-600 hover:bg-blue-700 active:scale-[0.99] text-white font-bold rounded-xl transition-all shadow shadow-blue-200 text-sm"
+              >
+                Start Extraction →
+              </button>
+            </form>
+          </div>
+        </div>
+      );
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // STEP 2 — CONTENT REVIEW
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    function MdPreview({ text }) {
+      const html = useMemo(() => {
+        if (!text || !text.trim())
+          return '<p style="color:#94a3b8;font-style:italic">No content available.</p>';
+        try { return marked.parse(text); }
+        catch { return `<pre style="white-space:pre-wrap">${text}</pre>`; }
+      }, [text]);
+
+      return (
+        <div
+          className="md p-5 bg-white border border-slate-200 rounded-xl overflow-y-auto text-sm leading-relaxed"
+          style={{ maxHeight: 400 }}
+          dangerouslySetInnerHTML={{ __html: html }}
+        />
+      );
+    }
+
+    function ContentReviewStep({ req, onSubmit }) {
+      const [view, setView]       = useState("preview");
+      const [text, setText]       = useState(req.content || "");
+      const [approved, setApproved] = useState(true);
+      const [chunking, setChunking] = useState(false);
+      const [err, setErr]         = useState("");
+
+      const handleSubmit = async () => {
+        setErr("");
+        if (approved && !text.trim()) {
+          setErr("Cannot approve empty content. Please add text or switch to Reject.");
+          return;
+        }
+        try {
+          await onSubmit({
+            sessionId: req.session_id,
+            approved,
+            text: approved ? text : null,
+            requireChunking: approved ? chunking : false,
+          });
+        } catch (e) {
+          setErr(e.message);
+        }
+      };
+
+      return (
+        <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
+          {/* Header */}
+          <div className="px-8 py-6 bg-gradient-to-br from-green-50 to-emerald-50 border-b border-slate-100">
+            <div className="flex items-start justify-between gap-4">
+              <div className="flex items-center gap-3">
+                <div className="w-8 h-8 bg-green-600 rounded-lg grid place-items-center text-white text-sm flex-shrink-0">
+                  📝
+                </div>
+                <div>
+                  <h2 className="text-xl font-bold text-slate-800">Content Review</h2>
+                  <p className="text-slate-500 text-sm mt-0.5">
+                    Review the extracted text. You may edit it before approving.
+                  </p>
+                </div>
+              </div>
+              <div className="flex flex-col items-end gap-1.5 flex-shrink-0">
+                {req.token_num != null && (
+                  <span className="px-3 py-1 bg-white border border-blue-200 text-blue-700 text-xs font-bold rounded-full shadow-sm">
+                    ~{req.token_num.toLocaleString()} tokens
+                  </span>
+                )}
+                <span className="text-[10px] font-mono text-slate-400">
+                  id: {req.session_id.slice(0, 12)}…
+                </span>
+              </div>
+            </div>
+          </div>
+
+          <div className="p-8 space-y-6">
+            <Alert type="error" msg={err} onClose={() => setErr("")} />
+
+            {/* Content area */}
+            <div>
+              <div className="flex items-center justify-between mb-2.5">
+                <div className="flex items-center gap-2">
+                  <span className="text-sm font-semibold text-slate-700">Extracted Content</span>
+                </div>
+                <div className="flex border border-slate-200 rounded-lg overflow-hidden text-xs font-semibold">
+                  {["preview", "edit"].map((m) => (
+                    <button
+                      key={m}
+                      onClick={() => setView(m)}
+                      className={`px-3.5 py-1.5 transition-colors ${
+                        view === m
+                          ? "bg-slate-800 text-white"
+                          : "bg-white text-slate-500 hover:bg-slate-50"
+                      }`}
+                    >
+                      {m === "preview" ? "👁 Preview" : "✏️ Edit"}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {view === "preview" ? (
+                <MdPreview text={text} />
+              ) : (
+                <textarea
+                  value={text}
+                  onChange={(e) => setText(e.target.value)}
+                  rows={18}
+                  placeholder="Extracted content will appear here…"
+                  className="w-full px-4 py-3 border border-slate-300 rounded-xl text-sm font-mono leading-relaxed focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-y transition-all"
+                  style={{ minHeight: 200 }}
+                />
+              )}
+            </div>
+
+            {/* Decision */}
+            <div>
+              <p className="text-sm font-semibold text-slate-700 mb-3">Your Decision</p>
+              <div className="grid grid-cols-2 gap-3">
+                <button
+                  onClick={() => setApproved(true)}
+                  className={`py-4 rounded-xl border-2 font-bold text-sm transition-all ${
+                    approved
+                      ? "border-green-500 bg-green-50 text-green-700 shadow shadow-green-100"
+                      : "border-slate-200 bg-white text-slate-400 hover:border-green-300 hover:text-green-600 hover:bg-green-50"
+                  }`}
+                >
+                  ✓&nbsp; Approve
+                </button>
+                <button
+                  onClick={() => setApproved(false)}
+                  className={`py-4 rounded-xl border-2 font-bold text-sm transition-all ${
+                    !approved
+                      ? "border-red-500 bg-red-50 text-red-700 shadow shadow-red-100"
+                      : "border-slate-200 bg-white text-slate-400 hover:border-red-300 hover:text-red-600 hover:bg-red-50"
+                  }`}
+                >
+                  ✗&nbsp; Reject
+                </button>
+              </div>
+            </div>
+
+            {/* Chunking option — only shown when approved AND ask_chunking=true */}
+            {approved && req.ask_chunking && (
+              <div className="p-4 bg-amber-50 border border-amber-200 rounded-xl">
+                <label className="flex items-start gap-3 cursor-pointer group">
+                  <input
+                    type="checkbox"
+                    checked={chunking}
+                    onChange={(e) => setChunking(e.target.checked)}
+                    className="mt-0.5 w-4 h-4 rounded flex-shrink-0"
+                    style={{ accentColor: "#d97706" }}
+                  />
+                  <div>
+                    <span className="text-sm font-bold text-amber-900 group-hover:text-amber-700 transition-colors">
+                      Enable Chunking
+                    </span>
+                    <p className="text-xs text-amber-700 mt-0.5 leading-relaxed">
+                      Splits the approved text into overlapping chunks for improved search
+                      precision. Recommended for large documents
+                      {req.token_num != null ? ` (this document: ~${req.token_num.toLocaleString()} tokens)` : ""}.
+                    </p>
+                  </div>
+                </label>
+              </div>
+            )}
+
+            {/* Rejection note */}
+            {!approved && (
+              <Alert
+                type="warn"
+                msg="This content will be rejected. The extraction pipeline will handle the rejection accordingly."
+              />
+            )}
+
+            <button
+              onClick={handleSubmit}
+              className="w-full py-3.5 bg-blue-600 hover:bg-blue-700 active:scale-[0.99] text-white font-bold rounded-xl transition-all shadow shadow-blue-200 text-sm"
+            >
+              Submit Review →
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // STEP 3 — FINAL REVIEW
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    function TextListItem({ index, value, onChange, onRemove }) {
+      const [view, setView] = useState("preview");
+
+      return (
+        <div className="border border-slate-200 rounded-xl bg-white overflow-hidden">
+          {/* Item toolbar */}
+          <div className="flex items-center justify-between px-3 py-2 bg-slate-50 border-b border-slate-200">
+            <span className="text-xs text-slate-400 font-mono font-semibold">#{index + 1}</span>
+            <div className="flex items-center gap-2">
+              <div className="flex border border-slate-200 rounded-lg overflow-hidden text-xs font-semibold">
+                {["preview", "edit"].map((m) => (
+                  <button
+                    key={m}
+                    onClick={() => setView(m)}
+                    className={`px-3 py-1 transition-colors ${
+                      view === m
+                        ? "bg-slate-800 text-white"
+                        : "bg-white text-slate-500 hover:bg-slate-50"
+                    }`}
+                  >
+                    {m === "preview" ? "👁 Preview" : "✏️ Edit"}
+                  </button>
+                ))}
+              </div>
+              <button
+                onClick={onRemove}
+                title="Remove"
+                className="w-6 h-6 flex items-center justify-center text-slate-300 hover:text-red-500 hover:bg-red-50 rounded-lg transition-all"
+              >
+                ✕
+              </button>
+            </div>
+          </div>
+
+          {/* Content area */}
+          <div className="p-3">
+            {view === "preview" ? (
+              <div
+                className="md text-sm leading-relaxed"
+                style={{ minHeight: 60 }}
+                dangerouslySetInnerHTML={{
+                  __html: (() => {
+                    if (!value || !value.trim())
+                      return '<p style="color:#94a3b8;font-style:italic;font-size:0.8em">Empty — switch to Edit to add content.</p>';
+                    try { return marked.parse(value); }
+                    catch { return `<pre style="white-space:pre-wrap;font-size:0.8em">${value}</pre>`; }
+                  })(),
+                }}
+              />
+            ) : (
+              <textarea
+                value={value}
+                onChange={(e) => onChange(e.target.value)}
+                rows={4}
+                className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs font-mono leading-relaxed focus:ring-2 focus:ring-blue-400 focus:border-transparent resize-y transition-all bg-white"
+                style={{ minHeight: 80 }}
+              />
+            )}
+          </div>
+        </div>
+      );
+    }
+
+    function TextListEditor({ label, icon, items, setItems }) {
+      const update = (i, v) => {
+        const n = [...items];
+        n[i] = v;
+        setItems(n);
+      };
+      const remove = (i) => setItems(items.filter((_, j) => j !== i));
+      const add    = () => setItems([...items, ""]);
+
+      return (
+        <div>
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="text-sm font-bold text-slate-700">
+              {icon}&nbsp;{label}
+            </h3>
+            <span className="text-xs text-slate-400 bg-white border border-slate-200 px-2 py-0.5 rounded-full font-mono">
+              {items.length} item{items.length !== 1 ? "s" : ""}
+            </span>
+          </div>
+
+          <div className="space-y-2">
+            {items.length === 0 && (
+              <div className="text-center py-4 text-sm text-slate-400 italic border-2 border-dashed border-slate-200 rounded-xl">
+                No items. Click "Add item" below.
+              </div>
+            )}
+            {items.map((item, i) => (
+              <TextListItem
+                key={i}
+                index={i}
+                value={item}
+                onChange={(v) => update(i, v)}
+                onRemove={() => remove(i)}
+              />
+            ))}
+          </div>
+
+          <button
+            onClick={add}
+            className="mt-3 text-xs font-bold text-blue-600 hover:text-blue-700 flex items-center gap-1 transition-colors"
+          >
+            ＋ Add item
+          </button>
+        </div>
+      );
+    }
+
+    function FinalReviewStep({ req, onSubmit }) {
+      const fa = req.final_answer || {};
+      const [kwTexts,  setKwTexts]  = useState(fa.texts_for_keyword_search  || []);
+      const [semTexts, setSemTexts] = useState(fa.texts_for_semantic_search || []);
+      const [metaRaw,  setMetaRaw]  = useState(
+        fa.meta_extension ? JSON.stringify(fa.meta_extension, null, 2) : ""
+      );
+      const [metaErr, setMetaErr] = useState("");
+      const [err, setErr]         = useState("");
+
+      const handleSubmit = async () => {
+        setErr(""); setMetaErr("");
+        let meta = null;
+        if (metaRaw.trim()) {
+          try { meta = JSON.parse(metaRaw); }
+          catch (e) {
+            setMetaErr("Invalid JSON — " + e.message);
+            return;
+          }
+        }
+        try {
+          await onSubmit({
+            sessionId: req.session_id,
+            finalAnswer: {
+              texts_for_keyword_search:  kwTexts.filter((t) => t.trim()),
+              texts_for_semantic_search: semTexts.filter((t) => t.trim()),
+              meta_extension: meta,
+            },
+          });
+        } catch (e) {
+          setErr(e.message);
+        }
+      };
+
+      return (
+        <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
+          {/* Header */}
+          <div className="px-8 py-6 bg-gradient-to-br from-purple-50 to-violet-50 border-b border-slate-100">
+            <div className="flex items-center gap-3">
+              <div className="w-8 h-8 bg-purple-600 rounded-lg grid place-items-center text-white text-sm">
+                📋
+              </div>
+              <div>
+                <h2 className="text-xl font-bold text-slate-800">Final Review</h2>
+                <p className="text-slate-500 text-sm mt-0.5">
+                  Review and optionally edit the processed texts and metadata before uploading.
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <div className="p-8 space-y-6">
+            <Alert type="error" msg={err} onClose={() => setErr("")} />
+
+            {/* Summary badge */}
+            <div className="flex flex-wrap gap-2">
+              <span className="px-3 py-1 bg-blue-50 text-blue-700 text-xs font-bold rounded-full border border-blue-100">
+                🔍 {kwTexts.length} keyword text{kwTexts.length !== 1 ? "s" : ""}
+              </span>
+              <span className="px-3 py-1 bg-purple-50 text-purple-700 text-xs font-bold rounded-full border border-purple-100">
+                🧠 {semTexts.length} semantic text{semTexts.length !== 1 ? "s" : ""}
+              </span>
+              {metaRaw.trim() && (
+                <span className="px-3 py-1 bg-slate-50 text-slate-600 text-xs font-bold rounded-full border border-slate-200">
+                  📋 Metadata attached
+                </span>
+              )}
+            </div>
+
+            {/* Keyword Search Texts */}
+            <div className="p-5 bg-blue-50/50 rounded-2xl border border-blue-100">
+              <TextListEditor
+                label="Keyword Search Texts"
+                icon="🔍"
+                items={kwTexts}
+                setItems={setKwTexts}
+              />
+            </div>
+
+            {/* Semantic Search Texts */}
+            <div className="p-5 bg-purple-50/50 rounded-2xl border border-purple-100">
+              <TextListEditor
+                label="Semantic Search Texts"
+                icon="🧠"
+                items={semTexts}
+                setItems={setSemTexts}
+              />
+            </div>
+
+            {/* Meta Extension (JSON) */}
+            <div>
+              <div className="flex items-center justify-between mb-2.5">
+                <h3 className="text-sm font-bold text-slate-700">📋 Metadata Extension</h3>
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] font-mono text-slate-400 uppercase tracking-widest">JSON</span>
+                  {metaRaw.trim() && !metaErr && (
+                    <span className="text-[10px] text-green-600 font-semibold">✓ valid</span>
+                  )}
+                </div>
+              </div>
+              {metaErr && <Alert type="error" msg={metaErr} onClose={() => setMetaErr("")} />}
+              <textarea
+                value={metaRaw}
+                onChange={(e) => { setMetaRaw(e.target.value); setMetaErr(""); }}
+                rows={12}
+                placeholder='{\n  "key": "value"\n}'
+                className="w-full px-4 py-3 border border-slate-300 rounded-xl text-xs font-mono leading-relaxed focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-y transition-all bg-slate-50"
+                spellCheck={false}
+              />
+              <p className="text-xs text-slate-400 mt-1.5">
+                Leave empty if no metadata extension is needed.
+              </p>
+            </div>
+
+            <button
+              onClick={handleSubmit}
+              className="w-full py-3.5 bg-blue-600 hover:bg-blue-700 active:scale-[0.99] text-white font-bold rounded-xl transition-all shadow shadow-blue-200 text-sm"
+            >
+              Confirm &amp; Upload →
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // STEP 4 — SUCCESS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    function SuccessStep({ onNew }) {
+      return (
+        <div className="bg-white rounded-2xl shadow-sm border border-slate-200 py-16 px-8 text-center">
+          <div
+            className="w-20 h-20 rounded-full bg-green-100 flex items-center justify-center mx-auto mb-6 text-4xl"
+            style={{ boxShadow: "0 0 0 8px #dcfce7" }}
+          >
+            ✓
+          </div>
+          <h2 className="text-2xl font-bold text-slate-800 mb-2">Extraction Complete!</h2>
+          <p className="text-slate-500 text-sm max-w-xs mx-auto mb-8 leading-relaxed">
+            The document has been successfully processed and uploaded to the knowledge base.
+          </p>
+          <button
+            onClick={onNew}
+            className="px-10 py-3.5 bg-blue-600 hover:bg-blue-700 active:scale-[0.99] text-white font-bold rounded-xl transition-all shadow shadow-blue-200 text-sm"
+          >
+            Process Another File
+          </button>
+        </div>
+      );
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // ROOT APP — WORKFLOW STATE MACHINE
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    function App() {
+      const [apiBase, setApiBase] = useState("http://localhost:8000");
+      const [step,    setStep]    = useState("setup");
+      const [loading, setLoading] = useState(false);
+      const [loadMsg, setLoadMsg] = useState("");
+      const [req,     setReq]     = useState(null);
+      const [slideNum, setSlideNum] = useState(0);
+
+      // Wraps an async action with loading state; errors propagate to callers.
+      const withLoad = (msg, fn) => async (...args) => {
+        setLoadMsg(msg);
+        setLoading(true);
+        try {
+          return await fn(...args);
+        } finally {
+          setLoading(false);
+        }
+      };
+
+      // Step 1 → Step 2
+      const handleStart = withLoad("Starting extraction…", async (project, source, languages) => {
+        const result = await startExtraction(apiBase, project, source, languages);
+        setReq(result);
+        setSlideNum(1);
+        setStep("content");
+      });
+
+      // Step 2 → Step 3
+      const handleContinue = withLoad("Processing review…", async ({ sessionId, approved, text, requireChunking }) => {
+        const result = await continueExtraction(apiBase, sessionId, approved, text, requireChunking);
+        setReq(result);
+        setStep("final");
+      });
+
+      // Step 3 → Success or back to Step 2 (PPT loop)
+      const handlePost = withLoad("Uploading to knowledge base…", async ({ sessionId, finalAnswer }) => {
+        const result = await postExtraction(apiBase, sessionId, finalAnswer);
+        if (result === null || result === undefined) {
+          // Null → workflow complete
+          setStep("success");
+        } else {
+          // ReviewRequest → next PPT slide, loop back to content review
+          setReq(result);
+          setSlideNum((n) => n + 1);
+          setStep("content");
+        }
+      });
+
+      const handleNew = () => {
+        setStep("setup");
+        setReq(null);
+        setSlideNum(0);
+      };
+
+      return (
+        <div className="min-h-screen bg-slate-50">
+          {loading && <LoadingOverlay msg={loadMsg} />}
+
+          {/* ── Sticky header ── */}
+          <header className="bg-white border-b border-slate-200 sticky top-0 z-10 shadow-sm">
+            <div className="max-w-3xl mx-auto px-4 sm:px-6 h-14 flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="w-8 h-8 bg-blue-600 rounded-lg grid place-items-center text-white font-black text-xs shadow shadow-blue-200">
+                  DE
+                </div>
+                <div className="leading-tight">
+                  <p className="text-sm font-bold text-slate-800">Data Extraction Workflow</p>
+                  <p className="text-[10px] text-slate-400 hidden sm:block">HITL Document Processing Pipeline</p>
+                </div>
+              </div>
+              {req && step !== "success" && (
+                <div className="hidden md:flex items-center gap-2 text-[10px] text-slate-400 font-mono">
+                  <span className="w-1.5 h-1.5 bg-green-400 rounded-full animate-pulse" />
+                  <span>session: {req.session_id}</span>
+                </div>
+              )}
+            </div>
+          </header>
+
+          {/* ── Main content ── */}
+          <main className="max-w-3xl mx-auto px-4 sm:px-6 py-10">
+            <StepBar step={step} slideNum={slideNum > 1 ? slideNum : 0} />
+
+            {step === "setup" && (
+              <SetupStep
+                apiBase={apiBase}
+                setApiBase={setApiBase}
+                onSubmit={handleStart}
+              />
+            )}
+
+            {step === "content" && req && (
+              <ContentReviewStep req={req} onSubmit={handleContinue} />
+            )}
+
+            {step === "final" && req && (
+              <FinalReviewStep req={req} onSubmit={handlePost} />
+            )}
+
+            {step === "success" && <SuccessStep onNew={handleNew} />}
+          </main>
+
+          {/* ── Footer ── */}
+          <footer className="text-center text-[10px] text-slate-300 py-6 font-mono">
+            Data Extraction Workflow · HITL Pipeline
+          </footer>
+        </div>
+      );
+    }
+
+    // Mount
+    ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+  </script>
+</body>
+</html>

@@ -14,17 +14,19 @@ class Page(BaseModel):
 
 # Metadata definition
 class Metadata(BaseModel):
-    project: str = Field(description="The project name of the file")
-    mime_type: str = Field(description="The MIME type of the file")
-    size: int = Field(description="The size of the file")
-    file_name: str = Field(description="The name of the file")
+    project: str | None = Field(
+        default=None, description="The project name of the file"
+    )
+    mime_type: str | None = Field(default=None, description="The MIME type of the file")
+    size: int | None = Field(default=None, description="The size of the file")
+    file_name: str | None = Field(default=None, description="The name of the file")
     extension: SerializeAsAny[BaseModel] | None = Field(
         default=None, description="The extension of the file"
     )
-    semantic_text: str | None = Field(
-        default=None, description="Summary of the file, used for semantic search"
+    semantic_texts: list[str] | None = Field(
+        default=None, description="Summaries of the file, used for semantic search"
     )
-    keyword_text: str | None = Field(
+    keyword_texts: list[str] | None = Field(
         default=None, description="Keywords of the file, used for keyword search"
     )
     pages: list[Page] | None = Field(

@@ -1,13 +1,8 @@
 from pathlib import Path
-from kreuzberg import (
-    extract_file,
-    ExtractionConfig,
-    OcrConfig,
-)
 from data.common.utils import get_llm
 from data.common.prompts import PROMPT_FOR_KEYWORD, PROMPT_FOR_SEMANTIC
 from langchain_core.messages import HumanMessage, AIMessage
-from data.common.utils import read_pdf, read_image
+from data.common.utils import read_file
 
 from common.logger import get_logger
 from data.common import const
@@ -15,33 +10,13 @@ from data.common import const
 logger = get_logger(__name__)
 
 
-class Extractor:
+class VLMExtractor:
     def __init__(self):
         self.llm = get_llm()
 
-    async def extract_with_ocr(
-        self,
-        source: Path,
-        languages: list[str],
-    ) -> str:
-        logger.info(f"Extracting OCR text with PaddleOCR for file: {source}")
-        config: ExtractionConfig = ExtractionConfig(
-            use_cache=True,
-            ocr=OcrConfig(
-                backend="paddleocr",
-                language="+".join(languages),
-                paddle_ocr_config={"model_tier": "server"},
-            ),
-        )
-        text = await extract_file(source, config=config)
-        return text.content
-
-    async def extract_keyword_with_llm(self, source: Path) -> str:
-        logger.info(f"Extracting keyword text with LLM for file: {source}")
-        if source.suffix == ".pdf":
-            file_content = read_pdf(source)
-        else:
-            file_content = read_image(source)
+    async def extract_keyword(self, source: Path) -> str:
+        logger.info(f"Extracting keyword text with VLM for file: {source}")
+        file_content = read_file(source)
         message = HumanMessage(
             content=[
                 {
@@ -54,12 +29,16 @@ class Extractor:
         result = await self.llm.ainvoke([message])
         return result.text
 
-    async def extract_summary_with_llm(self, source: Path, context: str = "") -> str:
-        logger.info(f"Extracting summary with LLM for file: {source}")
-        if source.suffix == ".pdf":
-            file_content = read_pdf(source)
+    async def extract_summary(
+        self, source: Path = None, text: str = None, context: str = ""
+    ) -> str:
+        logger.info("Extracting summary with VLM")
+        if source is not None:
+            file_content = read_file(source)
+        elif text is not None:
+            file_content = text
         else:
-            file_content = read_image(source)
+            raise ValueError("Either source or text must be provided")
         message = HumanMessage(
             content=[
                 {
