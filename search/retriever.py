@@ -1,10 +1,10 @@
 import asyncio
 from typing import Any
 from common.logger import get_logger
-from searcher.common import const
-from searcher.semantic_client import SemanticClient
-from searcher.keyword_client import KeywordClient
-from searcher.reranker import Reranker
+from search.common import const
+from search.semantic_client import SemanticClient
+from search.keyword_client import KeywordClient
+from search.reranker import Reranker
 from langchain_core.documents import Document
 
 logger = get_logger(__name__)

@@ -1,5 +1,7 @@
 import uuid
 from pathlib import Path
+from dotenv import load_dotenv
+
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -8,16 +10,14 @@ from data.common import const
 from data.executor import Executor
 from data.model.final_answer import FinalAnswer
 from data.model.review_request import ReviewRequest
-from dotenv import load_dotenv
 
-load_dotenv()
-
-api = FastAPI(
+load_dotenv(Path(__file__).parent / ".env")
+app = FastAPI(
     title="DataExtractor API",
     description="API for data extraction from documents",
 )
 
-api.add_middleware(
+app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_methods=["*"],
@@ -49,7 +49,7 @@ executor = Executor()
 # =============================================================================
 
 
-@api.post("/start_extraction", response_model=ReviewRequest)
+@app.post("/start_extraction", response_model=ReviewRequest)
 async def start_extraction(
     project: str,
     source: str,
@@ -68,7 +68,7 @@ async def start_extraction(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
-@api.post("/continue_extraction", response_model=ReviewRequest)
+@app.post("/continue_extraction", response_model=ReviewRequest)
 async def continue_extraction(
     session_id: str,
     approved: bool,
@@ -96,7 +96,7 @@ async def continue_extraction(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
-@api.post("/post_extraction")
+@app.post("/post_extraction")
 async def post_extraction(
     session_id: str,
     final_answer: FinalAnswer,

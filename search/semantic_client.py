@@ -6,7 +6,7 @@ import chromadb
 from langchain_chroma import Chroma
 from langchain_core.documents import Document
 from common.logger import get_logger
-from searcher.common import const
+from search.common import const
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
 
 logger = get_logger(__name__)
@@ -60,6 +60,8 @@ class SemanticClient:
     def create_container_if_not_exists(self, database: str, container: str) -> Chroma:
         collection_name = container.lower().replace(" ", "_")
         persist_path = os.path.join(const.ROOT_DIR, "vectorstore", database)
+
+        # This client is intended for local development and testing. For production, prefer a server-backed Chroma instance.
         client = chromadb.PersistentClient(path=persist_path)
         return Chroma(
             client=client,

@@ -25,6 +25,3 @@ SEMANTIC_TOP_K = 10
 EMBEDDING_MODEL_NAME = "models/gemini-embedding-001"  # input token limit: 2,048, default/maximum output dimension size: 3072
 CROSS_ENCODER_MODEL_NAME = "mixedbread-ai/mxbai-rerank-large-v2"  # Default Limit: 8,192 tokens. This is the length the model was primarily fine-tuned for and is the default setting in many implementations.
 RERANKER_BATCH_SIZE = 4  # Batch size for reranker to avoid OOM on GPU
-
-# Importer
-DATABASE = "ai_ready"

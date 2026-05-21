@@ -13,6 +13,7 @@ from langgraph.types import Command, StateSnapshot
 from common.logger import get_logger
 from data.common import const
 from data.common.utils import store_metadata
+from grpc_protos.search.search_client import SearchClient
 from data.extract_graph import ExtractGraph
 from data.model.matadata import Metadata, Page
 from data.model.review_request import ReviewRequest
@@ -199,9 +200,10 @@ class Executor:
                 keyword_texts=values["texts_for_keyword_search"],
             )
 
-        await self._finalize(session_id, metadata)
+        await self._upload_file_and_metadata(session_id, metadata)
+        await self._index_file(session_id, metadata)
+
         del self._sessions[session_id]
-        return None
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -259,7 +261,9 @@ class Executor:
             f"Expected an interrupt but none found for session '{session_id}'"
         )
 
-    async def _finalize(self, session_id: str, metadata: Metadata) -> None:
+    async def _upload_file_and_metadata(
+        self, session_id: str, metadata: Metadata
+    ) -> None:
         """Persist metadata and upload the raw source file."""
         session = self._sessions[session_id]
         source = session.source
@@ -284,3 +288,11 @@ class Executor:
         else:
             sink.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy(source, sink)
+
+    async def _index_file(self, session_id: str, metadata: Metadata) -> None:
+        """Index the file using the search client."""
+        session = self._sessions[session_id]
+        metadata_file_name = f"{session.source.stem}.json"
+        logger.info(f"Indexing '{metadata_file_name}' in project '{session.project}'")
+        async with SearchClient(session.project) as client:
+            await client.store([metadata_file_name])

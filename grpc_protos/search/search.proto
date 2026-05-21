@@ -1,0 +1,52 @@
+syntax = "proto3";
+
+package search;
+
+// Application-level status codes for RPC responses
+enum StatusCode {
+  OK = 0;
+  NOT_FOUND = 1;
+  INVALID_ARGUMENT = 2;
+  INTERNAL = 3;
+}
+
+// Search service providing document retrieval and storage capabilities
+service SearchService {
+  // Query documents from the index using hybrid search (semantic + keyword)
+  rpc Query(QueryRequest) returns (QueryResponse);
+
+  // Store documents in the index
+  rpc Store(StoreRequest) returns (StoreResponse);
+}
+
+// Document message representing a single document with content and metadata
+message Document {
+  string page_content = 1;
+  map<string, string> metadata = 2;
+}
+
+// Query request with search parameters
+message QueryRequest {
+  string project = 1;
+  string query = 2;
+  map<string, string> filters = 3;
+}
+
+// Query response containing matching documents
+message QueryResponse {
+  StatusCode status = 1;
+  repeated Document documents = 2;
+  string error = 3;
+}
+
+// Store request containing documents to be indexed
+message StoreRequest {
+  string project = 1;
+  repeated string metadata_file_names = 2;
+}
+
+// Store response
+message StoreResponse {
+  StatusCode status = 1;
+  string error = 2;
+}

@@ -1,0 +1,13 @@
+langchain==1.2.0
+langchain-chroma==1.1.0
+chromadb==1.5.9
+python-dotenv==1.1.1
+elasticsearch[async]==9.4.0
+mxbai-rerank
+
+# gRPC dependencies
+grpcio>=1.60.0
+grpcio-tools>=1.60.0
+grpcio-reflection>=1.60.0
+grpcio-health-checking>=1.60.0
+protobuf>=6.31.0

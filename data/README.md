@@ -4,17 +4,17 @@ A browser-based HITL (Human-in-the-Loop) frontend for the DataExtractor API.
 
 ## Running
 
-### 1. Start the backend
+### 1. Start the data backend
 
 ```bash
 # From the repo root
 mineru-api --host localhost --port 8001
-uvicorn data.main:api --reload --port 8000
+uvicorn data.app:app --reload --port 8000
 ```
 
-### 2. Open the frontend
+### 2. Open the data frontend
 
-Just double-click `frontend/index.html` or drag it into your browser.
+Just double-click `frontend/data/index.html` or drag it into your browser.
 
 ## Workflow
 

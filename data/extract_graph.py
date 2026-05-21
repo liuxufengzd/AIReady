@@ -1,5 +1,6 @@
 """Currently only support small file mode: image, pdf, powerpoint."""
 
+import os
 from typing import TypedDict
 
 from common.logger import get_logger
@@ -53,7 +54,7 @@ class ExtractGraph:
         logger.info(f"Extracting text from {source}")
         text = await self.mineru_extractor.extract(
             source,
-            api_url=const.MINERU_API_URL,
+            api_url=os.environ.get("MINERU_API_URL"),
             languages=state.get("languages"),
         )
         return {"extracted_text": text}

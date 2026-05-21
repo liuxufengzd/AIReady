@@ -2,7 +2,7 @@ import os
 from typing import Any
 from elasticsearch import AsyncElasticsearch
 from langchain_core.documents import Document
-from searcher.common import const
+from search.common import const
 from common.logger import get_logger
 
 logger = get_logger(__name__)

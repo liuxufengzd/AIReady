@@ -3,7 +3,7 @@ import threading
 from collections import defaultdict
 from langchain_core.documents import Document
 from mxbai_rerank.base import RankResult
-from searcher.common import const
+from search.common import const
 from common.logger import get_logger
 from mxbai_rerank import MxbaiRerankV2
 
