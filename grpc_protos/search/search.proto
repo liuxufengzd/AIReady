@@ -19,10 +19,11 @@ service SearchService {
   rpc Store(StoreRequest) returns (StoreResponse);
 }
 
-// Document message representing a single document with content and metadata
+// Document message representing a single document with content, file URL, and metadata
 message Document {
-  string page_content = 1;
-  map<string, string> metadata = 2;
+  string content = 1;
+  string file_url = 2;
+  map<string, string> metadata = 3;
 }
 
 // Query request with search parameters
@@ -32,17 +33,22 @@ message QueryRequest {
   map<string, string> filters = 3;
 }
 
-// Query response containing matching documents
+// Wrapper message for a list of strings
+message StringList {
+  repeated string values = 1;
+}
+
+// Query response containing matching chunks and files
 message QueryResponse {
   StatusCode status = 1;
-  repeated Document documents = 2;
+  map<string, StringList> file_name_to_chunk_ids = 2;
   string error = 3;
 }
 
 // Store request containing documents to be indexed
 message StoreRequest {
   string project = 1;
-  repeated string metadata_file_names = 2;
+  string source_file_name = 2;
 }
 
 // Store response

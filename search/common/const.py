@@ -4,8 +4,7 @@ from pathlib import Path
 ROOT_DIR = Path(__file__).parent.parent.parent.resolve()
 
 # Retriever
-TOP_K = 5  # For reranking model
-RRF_TOP_K = 5
+TOP_K = 5
 # The smoothing constant, its function is to reduce the extreme weight brought by high ranks (such as rank = 1). If your recall list is short,
 # or you want the weight of rank = 1 to be higher, you can try to reduce K (for example, K = 20). Keeping K = 60 is usually a safe starting point.
 RRF_SMOOTHING_CONSTANT = 20

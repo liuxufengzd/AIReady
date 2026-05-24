@@ -1,6 +1,7 @@
 import uuid
 from pathlib import Path
 from dotenv import load_dotenv
+from pydantic import BaseModel
 
 
 from fastapi import FastAPI, HTTPException
@@ -8,13 +9,12 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from data.common import const
 from data.executor import Executor
-from data.model.final_answer import FinalAnswer
 from data.model.review_request import ReviewRequest
 
 load_dotenv(Path(__file__).parent / ".env")
 app = FastAPI(
     title="DataExtractor API",
-    description="API for data extraction from documents",
+    description="API for data extraction from a file",
 )
 
 app.add_middleware(
@@ -34,18 +34,17 @@ executor = Executor()
 #              • session_id   - must be echoed in every subsequent call
 #              • content     – raw extracted text
 #              • ask_chunking - whether to ask the human to chunk the text
+#              • ask_extension - whether to ask the human to input the metadata extension
+#              • permit_reject - whether to permit the human to reject the text
 #              • token_num   – token count to inform the chunking decision
 #
 #  Step 2 — POST /continue_extraction
-#            Human submits: approval/rejection, (optional) revised text,
-#            and whether to chunk.  Returns a ReviewRequest with final_answer
-#            populated so the human can confirm / edit before upload.
+#            Human submits: (optional) approval/rejection, (optional) revised text, (optional) metadata extension(User input),
+#            and whether to chunk. Return user review result.
 #
 #  Step 3 — POST /post_extraction
-#            Human submits the (optionally edited) final answer.
-#            Returns null (non-PPT, or last PPT slide) or the next slide's
-#            ReviewRequest (PPT mid-deck) so the frontend can loop through
-#            all slides without extra orchestration.
+#            Human submits the LLM extracted metadata extension.
+#            Return human reviewed/revised metadata extension.
 # =============================================================================
 
 
@@ -71,26 +70,19 @@ async def start_extraction(
 @app.post("/continue_extraction", response_model=ReviewRequest)
 async def continue_extraction(
     session_id: str,
-    approved: bool,
+    approved: bool | None = None,
     text: str | None = None,
-    require_chunking: bool = False,
-) -> ReviewRequest:
-    """
-    Submit the text review decision.
-
-    - ``approved``         - accept (True) or reject (False) the extracted text
-    - ``text``             - revised text (required when approved=True)
-    - ``require_chunking`` - split the text into chunks before indexing
-
-    Returns a ReviewRequest whose ``final_answer`` contains the fully processed
-    texts and metadata for the human to confirm before upload.
-    """
+    require_chunking: bool | None = None,
+    extension: BaseModel | None = None,
+) -> ReviewRequest | None:
+    """Resume the graph after the first human review"""
     try:
-        return await executor.continue_text_review(
+        return await executor.continue_after_first_review(
             session_id,
             approved=approved,
             text=text,
             require_chunking=require_chunking,
+            extension=extension,
         )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -99,19 +91,10 @@ async def continue_extraction(
 @app.post("/post_extraction")
 async def post_extraction(
     session_id: str,
-    final_answer: FinalAnswer,
+    extension: BaseModel | None,
 ) -> ReviewRequest | None:
-    """
-    Submit the final-answer review.
-
-    The human may have edited ``texts_for_keyword_search``,
-    ``texts_for_semantic_search``, or ``meta_extension`` before submitting.
-
-    Returns:
-    - **null**          - extraction complete; metadata and raw file persisted.
-    - **ReviewRequest** - (PPT only) the next slide's content to review.
-    """
+    """Resume the graph with the human-reviewed extension(LLM extracted)"""
     try:
-        return await executor.submit_final_answer(session_id, final_answer)
+        return await executor.continue_after_extension_review(session_id, extension)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc

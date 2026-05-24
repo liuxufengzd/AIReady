@@ -19,7 +19,7 @@ INVALID_ARGUMENT: StatusCode
 INTERNAL: StatusCode
 
 class Document(_message.Message):
-    __slots__ = ("page_content", "metadata")
+    __slots__ = ("content", "file_url", "metadata")
     class MetadataEntry(_message.Message):
         __slots__ = ("key", "value")
         KEY_FIELD_NUMBER: _ClassVar[int]
@@ -27,11 +27,13 @@ class Document(_message.Message):
         key: str
         value: str
         def __init__(self, key: _Optional[str] = ..., value: _Optional[str] = ...) -> None: ...
-    PAGE_CONTENT_FIELD_NUMBER: _ClassVar[int]
+    CONTENT_FIELD_NUMBER: _ClassVar[int]
+    FILE_URL_FIELD_NUMBER: _ClassVar[int]
     METADATA_FIELD_NUMBER: _ClassVar[int]
-    page_content: str
+    content: str
+    file_url: str
     metadata: _containers.ScalarMap[str, str]
-    def __init__(self, page_content: _Optional[str] = ..., metadata: _Optional[_Mapping[str, str]] = ...) -> None: ...
+    def __init__(self, content: _Optional[str] = ..., file_url: _Optional[str] = ..., metadata: _Optional[_Mapping[str, str]] = ...) -> None: ...
 
 class QueryRequest(_message.Message):
     __slots__ = ("project", "query", "filters")
@@ -50,23 +52,36 @@ class QueryRequest(_message.Message):
     filters: _containers.ScalarMap[str, str]
     def __init__(self, project: _Optional[str] = ..., query: _Optional[str] = ..., filters: _Optional[_Mapping[str, str]] = ...) -> None: ...
 
+class StringList(_message.Message):
+    __slots__ = ("values",)
+    VALUES_FIELD_NUMBER: _ClassVar[int]
+    values: _containers.RepeatedScalarFieldContainer[str]
+    def __init__(self, values: _Optional[_Iterable[str]] = ...) -> None: ...
+
 class QueryResponse(_message.Message):
-    __slots__ = ("status", "documents", "error")
+    __slots__ = ("status", "file_name_to_chunk_ids", "error")
+    class FileNameToChunkIdsEntry(_message.Message):
+        __slots__ = ("key", "value")
+        KEY_FIELD_NUMBER: _ClassVar[int]
+        VALUE_FIELD_NUMBER: _ClassVar[int]
+        key: str
+        value: StringList
+        def __init__(self, key: _Optional[str] = ..., value: _Optional[_Union[StringList, _Mapping]] = ...) -> None: ...
     STATUS_FIELD_NUMBER: _ClassVar[int]
-    DOCUMENTS_FIELD_NUMBER: _ClassVar[int]
+    FILE_NAME_TO_CHUNK_IDS_FIELD_NUMBER: _ClassVar[int]
     ERROR_FIELD_NUMBER: _ClassVar[int]
     status: StatusCode
-    documents: _containers.RepeatedCompositeFieldContainer[Document]
+    file_name_to_chunk_ids: _containers.MessageMap[str, StringList]
     error: str
-    def __init__(self, status: _Optional[_Union[StatusCode, str]] = ..., documents: _Optional[_Iterable[_Union[Document, _Mapping]]] = ..., error: _Optional[str] = ...) -> None: ...
+    def __init__(self, status: _Optional[_Union[StatusCode, str]] = ..., file_name_to_chunk_ids: _Optional[_Mapping[str, StringList]] = ..., error: _Optional[str] = ...) -> None: ...
 
 class StoreRequest(_message.Message):
-    __slots__ = ("project", "metadata_file_names")
+    __slots__ = ("project", "source_file_name")
     PROJECT_FIELD_NUMBER: _ClassVar[int]
-    METADATA_FILE_NAMES_FIELD_NUMBER: _ClassVar[int]
+    SOURCE_FILE_NAME_FIELD_NUMBER: _ClassVar[int]
     project: str
-    metadata_file_names: _containers.RepeatedScalarFieldContainer[str]
-    def __init__(self, project: _Optional[str] = ..., metadata_file_names: _Optional[_Iterable[str]] = ...) -> None: ...
+    source_file_name: str
+    def __init__(self, project: _Optional[str] = ..., source_file_name: _Optional[str] = ...) -> None: ...
 
 class StoreResponse(_message.Message):
     __slots__ = ("status", "error")

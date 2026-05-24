@@ -1,14 +1,23 @@
 from pydantic import BaseModel, Field, SerializeAsAny
 
 
-# Page information definition
-class Page(BaseModel):
-    page_num: int = Field(description="The page number of the page")
-    semantic_text: str = Field(
-        description="Summary of the page, used for semantic search"
+class Chunk(BaseModel):
+    id: str = Field(description="The ID of the chunk")
+    page_num: int | None = Field(
+        default=None, description="The page number of the chunk, used for pptx files"
     )
-    keyword_text: str = Field(
-        description="Keywords of the page, used for keyword search"
+    semantic_text: str | None = Field(
+        default=None,
+        description="The semantic text of the chunk, used for semantic search",
+    )
+    keyword_text: str | None = Field(
+        default=None,
+        description="The keyword text of the chunk, used for keyword search",
+    )
+
+    retrieve_raw_file: bool = Field(
+        default=False,
+        description="Whether to retrieve the raw file for the chunk",
     )
 
 
@@ -20,17 +29,13 @@ class Metadata(BaseModel):
     mime_type: str | None = Field(default=None, description="The MIME type of the file")
     size: int | None = Field(default=None, description="The size of the file")
     file_name: str | None = Field(default=None, description="The name of the file")
+    # Stored as JSONB in the database
+    chunks: list[Chunk] = Field(
+        default_factory=list, description="The chunks of the file"
+    )
+    # File level, used to minimize the scope of the chunks to search. Extracted by the LLM from the file content.
     extension: SerializeAsAny[BaseModel] | None = Field(
         default=None, description="The extension of the file"
-    )
-    semantic_texts: list[str] | None = Field(
-        default=None, description="Summaries of the file, used for semantic search"
-    )
-    keyword_texts: list[str] | None = Field(
-        default=None, description="Keywords of the file, used for keyword search"
-    )
-    pages: list[Page] | None = Field(
-        default=None, description="A list of pages in the file"
     )
 
 

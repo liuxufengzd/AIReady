@@ -15,10 +15,9 @@ from data.common import const
 from data.common.utils import store_metadata
 from grpc_protos.search.search_client import SearchClient
 from data.extract_graph import ExtractGraph
-from data.model.matadata import Metadata, Page
+from data.model.matadata import Chunk, Metadata
 from data.model.review_request import ReviewRequest
 from data.model.review_response import ReviewResponse
-from data.model.final_answer import FinalAnswer
 
 
 logger = get_logger(__name__)
@@ -37,8 +36,7 @@ class _Session:
     # PPT-specific
     images: list[Path] = field(default_factory=list)
     temp_dir: Path | None = None
-    current_page: int = 0
-    meta_pages: list[Page] = field(default_factory=list)
+    current_page: int = 1
     previous_summary: str = ""
 
     # The thread_id for the currently-running LangGraph invocation
@@ -46,23 +44,11 @@ class _Session:
 
 
 class Executor:
-    """
-    Wraps the LangGraph extraction graph and exposes a three-method HITL interface
-    that maps 1-to-1 onto the three API endpoints:
-
-      start()              - kick off extraction → first ReviewRequest (text content)
-      continue_text_review() - submit text approval + chunking → next ReviewRequest (final answer)
-      submit_final_answer()  - submit final answer edits → None (done) or next ReviewRequest
-                               for the next PPT slide
-    """
+    """Wraps the LangGraph extraction graph and exposes HITL interfaces"""
 
     def __init__(self):
         self.graph = ExtractGraph().build()
         self._sessions: dict[str, _Session] = {}
-
-    # ------------------------------------------------------------------
-    # Public HITL interface
-    # ------------------------------------------------------------------
 
     async def start(
         self,
@@ -73,15 +59,7 @@ class Executor:
         languages: list[str] = const.DEFAULT_LANGUAGES,
         meta_schema: Type[BaseModel] | None = None,
     ) -> ReviewRequest:
-        """
-        Validate the source file, initialise a session, and run the graph until
-        the first human-review interrupt.
-
-        Returns a ReviewRequest with:
-        - ``thread_id``  - must be echoed in every subsequent call
-        - ``content``    - raw extracted text for the human to review / edit
-        - ``token_num``  - token count so the human can decide on chunking
-        """
+        """Validate the source file, initialise a session, and run the graph until the human-review interrupt."""
         if not source.exists():
             raise FileNotFoundError(f"Source file not found: {source}")
         if not source.is_file():
@@ -107,26 +85,15 @@ class Executor:
         self._sessions[session_id] = session
         return await self._invoke(session_id)
 
-    async def continue_text_review(
+    async def continue_after_first_review(
         self,
         session_id: str,
         approved: bool,
         text: str | None,
+        extension: BaseModel | None,
         require_chunking: bool = False,
-    ) -> ReviewRequest:
-        """
-        Resume the graph after the human has reviewed the extracted text.
-
-        The human can:
-        - approve or reject the text
-        - edit the text (``text`` carries the revised version)
-        - request chunking (``require_chunking``)
-
-        The graph will finish processing (metadata extraction, optional
-        summarisation) and pause again at the final-answer review.  This
-        method returns that second ReviewRequest (containing the full
-        FinalAnswer for the human to confirm / edit).
-        """
+    ) -> ReviewRequest | None:
+        """Resume the graph after the first human review"""
         session = self._sessions[session_id]
         config = {"configurable": {"thread_id": session.active_thread_id}}
 
@@ -134,93 +101,56 @@ class Executor:
             approved=approved,
             content=text,
             require_chunking=require_chunking,
+            extension=extension,
         )
         await self.graph.ainvoke(Command(resume=response), config)
 
         state = self.graph.get_state(config)
-        if not state.next:
-            raise RuntimeError(
-                f"Expected a final-review interrupt for session '{session_id}' "
-                "but the graph completed unexpectedly."
-            )
-        return self._build_review_request(session_id, state)
+        for task in state.tasks:
+            if task.interrupts:
+                return self._build_review_request(session_id, state)
 
-    async def submit_final_answer(
+    async def continue_after_extension_review(
         self,
         session_id: str,
-        final_answer: FinalAnswer,
+        extension: BaseModel,
     ) -> ReviewRequest | None:
-        """
-        Resume the graph with the human-approved (and optionally edited) final answer.
-
-        For non-PPT files this finalises the session and returns None.
-        For PPT files it accumulates the page result; if more slides remain it
-        starts the next slide's graph run and returns its ReviewRequest so the
-        frontend can loop through all pages automatically.
-        """
+        """Resume the graph with the human-reviewed extension"""
         session = self._sessions[session_id]
         config = {"configurable": {"thread_id": session.active_thread_id}}
-
-        response = ReviewResponse(final_answer=final_answer)
+        response = ReviewResponse(extension=extension)
         await self.graph.ainvoke(Command(resume=response), config)
 
-        state = self.graph.get_state(config)
-        if state.next:
-            raise RuntimeError(
-                f"Graph paused unexpectedly after final-answer submission "
-                f"for session '{session_id}'."
-            )
-
-        values = state.values
-
+        # Handle the next slide if the file is a PPTX
+        values = self.graph.get_state(config).values
         if session.is_pptx:
-            summary = values["texts_for_semantic_search"][0]
-            session.previous_summary = summary
-            session.meta_pages.append(
-                Page(
-                    page_num=session.current_page + 1,
-                    semantic_text=summary,
-                    keyword_text=values["texts_for_keyword_search"][0],
-                )
-            )
+            session.previous_summary = values["text_pairs"][-1].semantic_text
             session.current_page += 1
-
-            if session.current_page < len(session.images):
-                # Start next slide — returns its first ReviewRequest
+            if session.current_page <= len(session.images):
+                # Start to handle the next slide
                 return await self._invoke(session_id)
 
-            metadata = Metadata(
-                extension=values.get("meta_extension", None),
-                pages=session.meta_pages,
-            )
-        else:
-            metadata = Metadata(
-                extension=values.get("meta_extension", None),
-                semantic_texts=values["texts_for_semantic_search"],
-                keyword_texts=values["texts_for_keyword_search"],
-            )
+        # Index the file
+        await self._index_file(session.project, session.source.name)
+        
+        # Upload the metadata
+        await self._upload_metadata(session_id)
 
-        await self._upload_file_and_metadata(session_id, metadata)
-        await self._index_file(session_id, metadata)
+        # Upload the file
+        await self._upload_file(session_id)
 
+        # Delete the session
         del self._sessions[session_id]
 
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
-
     async def _invoke(self, session_id: str) -> ReviewRequest:
-        """
-        Create a fresh LangGraph thread for the current PPTX page or the whole file,
-        run until the first interrupt, and return the resulting ReviewRequest.
-        """
+        """Create a fresh LangGraph thread for the current PPTX page or the whole file, run until the interrupt"""
         session = self._sessions[session_id]
         thread_id = str(uuid.uuid4())
         session.active_thread_id = thread_id
         config = {"configurable": {"thread_id": thread_id}}
 
         if session.is_pptx:
-            idx = session.current_page
+            idx = session.current_page - 1
             context = f"Slide {idx + 1} of PowerPoint: {session.source.stem}."
             if session.previous_summary:
                 context += f" Previous slide summary: {session.previous_summary}"
@@ -261,21 +191,43 @@ class Executor:
             f"Expected an interrupt but none found for session '{session_id}'"
         )
 
-    async def _upload_file_and_metadata(
-        self, session_id: str, metadata: Metadata
+    async def _upload_metadata(
+        self,
+        session_id: str,
     ) -> None:
-        """Persist metadata and upload the raw source file."""
+        """Combine and upload the metadata."""
         session = self._sessions[session_id]
         source = session.source
+        config = {"configurable": {"thread_id": session.active_thread_id}}
+        values = self.graph.get_state(config).values
 
-        metadata.project = session.project
-        metadata.mime_type = mimetypes.guess_type(source)[0]
-        metadata.size = source.stat().st_size
-        metadata.file_name = source.name
+        chunks = [
+            Chunk(
+                id=str(uuid.uuid4()),
+                page_num=session.current_page if session.is_pptx else None,
+                semantic_text=text_pair.semantic_text,
+                keyword_text=text_pair.keyword_text,
+                retrieve_raw_file=values.get("retrieve_raw_file", False),
+            )
+            for text_pair in values["text_pairs"]
+        ]
 
-        logger.info(f"Saving metadata for {source.name}")
-        store_metadata(session.project, source.name, metadata)
+        metadata = Metadata(
+            project=session.project,
+            mime_type=mimetypes.guess_type(source)[0],
+            size=source.stat().st_size,
+            file_name=source.name,
+            chunks=chunks,
+            extension=values.get("extension", None),
+        )
 
+        logger.info(f"Uploading metadata for {source.name}")
+        store_metadata(session.project, metadata)
+
+    async def _upload_file(self, session_id: str) -> None:
+        """Upload the raw source file."""
+        session = self._sessions[session_id]
+        source = session.source
         sink = Path(f"store/s3/processed/{session.project}/{source.name}")
         logger.info(f"Uploading raw file: {source} → {sink}")
         if session.is_pptx and session.temp_dir:
@@ -289,10 +241,8 @@ class Executor:
             sink.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy(source, sink)
 
-    async def _index_file(self, session_id: str, metadata: Metadata) -> None:
+    async def _index_file(self, project: str, source_file_name: str) -> None:
         """Index the file using the search client."""
-        session = self._sessions[session_id]
-        metadata_file_name = f"{session.source.stem}.json"
-        logger.info(f"Indexing '{metadata_file_name}' in project '{session.project}'")
-        async with SearchClient(session.project) as client:
-            await client.store([metadata_file_name])
+        logger.info(f"Indexing file '{source_file_name}' in project '{project}'")
+        async with SearchClient(project) as client:
+            await client.store(source_file_name)

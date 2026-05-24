@@ -1,7 +1,5 @@
 from pydantic import BaseModel, Field
 
-from data.model.final_answer import FinalAnswer
-
 
 class ReviewRequest(BaseModel):
     session_id: str | None = Field(
@@ -11,11 +9,18 @@ class ReviewRequest(BaseModel):
     ask_chunking: bool = Field(
         default=True, description="Whether to ask the human to chunk the text."
     )
+    ask_extension: bool = Field(
+        default=False,
+        description="Whether to ask the human to input the metadata extension.",
+    )
+    permit_reject: bool = Field(
+        default=True, description="Whether to permit the human to reject the text."
+    )
     token_num: int | None = Field(
         default=None,
         description="Token count of the extracted text, shown to help the human decide on chunking.",
     )
-    final_answer: FinalAnswer | None = Field(
+    extension: BaseModel | None = Field(
         default=None,
-        description="The final answer to review.",
+        description="The extension of the file, extracted by the LLM from the file content.",
     )

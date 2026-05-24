@@ -5,7 +5,6 @@ from search.common import const
 from search.semantic_client import SemanticClient
 from search.keyword_client import KeywordClient
 from search.reranker import Reranker
-from langchain_core.documents import Document
 
 logger = get_logger(__name__)
 
@@ -27,60 +26,31 @@ class Retriever:
         query: str,
         *,
         filters: dict[str, Any] = None,
-        rrf_top_k: int = const.RRF_TOP_K,
-        rrf_smoothing_constant: int = const.RRF_SMOOTHING_CONSTANT,
         top_k: int = const.TOP_K,
-        enable_semantic_search: bool = True,
-        enable_keyword_search: bool = True,
-        enable_rerank: bool = False,
-    ) -> list[Document]:
-        if rrf_top_k < top_k:
-            raise ValueError("rrf_top_k must be greater than or equal to top_k")
-        if rrf_smoothing_constant <= 0:
-            raise ValueError("rrf_smoothing_constant must be greater than 0")
+    ) -> dict[str, list[str]]:
+        tasks = [
+            self.semantic_client.query(query, filters=filters),
+            self.keyword_client.query(query, filters=filters),
+        ]
+        results = await asyncio.gather(*tasks)
+        chunk_ids_semantic = [
+            (doc.metadata.get("_chunk_id"), doc.metadata.get("_file_name"))
+            for doc in results[0]
+        ]
+        chunk_ids_keyword = [
+            (doc.metadata.get("_chunk_id"), doc.metadata.get("_file_name"))
+            for doc in results[1]
+        ]
 
-        # Collect documents from each retriever in parallel
-        docs_semantic: list[Document] = []
-        docs_keyword: list[Document] = []
+        chunks = self.reranker.fuse([chunk_ids_semantic, chunk_ids_keyword])[:top_k]
 
-        tasks = []
-        if enable_semantic_search:
-            tasks.append(self.semantic_client.query(query, filters=filters))
-        if enable_keyword_search:
-            tasks.append(self.keyword_client.query(query, filters=filters))
-
-        if tasks:
-            results = await asyncio.gather(*tasks)
-            idx = 0
-            if enable_semantic_search:
-                docs_semantic = results[idx]
-                idx += 1
-                logger.debug("======Semantic======")
-                for doc in docs_semantic:
-                    logger.debug("-" * 100 + "\n" + doc.page_content + "\n" + "-" * 100)
-
-            if enable_keyword_search:
-                docs_keyword = results[idx]
-                logger.debug("======Keyword=======")
-                for doc in docs_keyword:
-                    logger.debug("-" * 100 + "\n" + doc.page_content + "\n" + "-" * 100)
-
-        docs: list[Document] = docs_semantic or docs_keyword
-
-        # Fuse and rerank
-        if docs_semantic and docs_keyword:
-            docs = self.reranker.fuse(
-                [docs_semantic, docs_keyword],
-                top_k=rrf_top_k,
-                smoothing_constant=rrf_smoothing_constant,
-            )
-        if enable_rerank and docs:
-            docs = await self.reranker.rerank(docs, query, top_k=top_k)
-            logger.debug("======Reranked======")
-        for doc in docs:
-            logger.debug("-" * 100 + "\n" + doc.page_content + "\n" + "-" * 100)
-
-        return docs[:top_k]
+        # create a dict: {file_name: [chunk_ids]}
+        chunks_dict: dict[str, list[str]] = {}
+        for chunk_id, file_name in chunks:
+            if file_name not in chunks_dict:
+                chunks_dict[file_name] = []
+            chunks_dict[file_name].append(chunk_id)
+        return chunks_dict
 
     async def _close(self) -> None:
         await self.keyword_client.close()

@@ -16,7 +16,7 @@ class SearchServiceServicer(search_pb2_grpc.SearchServiceServicer):
     ) -> search_pb2.StoreResponse:
         try:
             async with Importer(request.project) as importer:
-                await importer.batch(list(request.metadata_file_names))
+                await importer.batch(request.source_file_name)
             return search_pb2.StoreResponse(status=search_pb2.OK)
         except FileNotFoundError as e:
             logger.warning(f"[{request.project}] Store failed - file not found: {e}")
@@ -31,16 +31,10 @@ class SearchServiceServicer(search_pb2_grpc.SearchServiceServicer):
         filters = dict(request.filters) if request.filters else None
         try:
             async with Retriever(const.DATABASE, request.project) as retriever:
-                docs = await retriever.query(request.query, filters=filters)
+                chunks_dict = await retriever.query(request.query, filters=filters)
             return search_pb2.QueryResponse(
                 status=search_pb2.OK,
-                documents=[
-                    search_pb2.Document(
-                        page_content=doc.page_content,
-                        metadata={k: str(v) for k, v in doc.metadata.items()},
-                    )
-                    for doc in docs
-                ],
+                file_name_to_chunk_ids=chunks_dict,
             )
         except Exception as e:
             logger.exception(f"[{request.project}] Query failed: {e}")

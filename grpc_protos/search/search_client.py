@@ -23,7 +23,6 @@ import os
 from typing import Any
 
 import grpc
-from langchain_core.documents import Document
 
 from grpc_protos.search import search_pb2, search_pb2_grpc
 from common.logger import get_logger
@@ -119,16 +118,16 @@ class SearchClient:
         query: str,
         *,
         filters: dict[str, Any] | None = None,
-    ) -> list[Document]:
+    ) -> dict[str, list[str]]:
         """
-        Query documents from the search service using hybrid search.
+        Query file chunks from the search service using hybrid search.
 
         Args:
             query: Search query text
             filters: Optional key/value filters to scope the search
 
         Returns:
-            List of matching documents
+            Dictionary of file names to matching chunk IDs
         """
         stub = self._ensure_connected()
 
@@ -143,26 +142,20 @@ class SearchClient:
         if response.status != search_pb2.OK:
             raise RuntimeError(f"[{self.project}] Query failed: {response.error}")
 
-        return [
-            Document(
-                page_content=doc.page_content,
-                metadata=dict(doc.metadata),
-            )
-            for doc in response.documents
-        ]
+        return response.file_name_to_chunk_ids
 
-    async def store(self, metadata_file_names: list[str]) -> None:
+    async def store(self, source_file_name: str) -> None:
         """
-        Index documents from pre-processed metadata files.
+        Index file by its name.
 
         Args:
-            metadata_file_names: List of metadata file names (without path) to index
+            source_file_name: Name of the source file to index
         """
         stub = self._ensure_connected()
 
         request = search_pb2.StoreRequest(
             project=self.project,
-            metadata_file_names=metadata_file_names,
+            source_file_name=source_file_name,
         )
 
         response: search_pb2.StoreResponse = await stub.Store(request)

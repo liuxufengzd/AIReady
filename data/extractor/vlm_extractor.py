@@ -1,8 +1,8 @@
 from pathlib import Path
-from data.common.utils import get_llm
+from common.util import get_llm
 from data.common.prompts import PROMPT_FOR_KEYWORD, PROMPT_FOR_SEMANTIC
 from langchain_core.messages import HumanMessage, AIMessage
-from data.common.utils import read_file
+from common.util import read_file
 
 from common.logger import get_logger
 from data.common import const
