@@ -57,20 +57,11 @@ Follow a "Thought-Action-Observation" loop, culminating in a precise final answe
 4.  **Final Answer**: When you believe you have gathered sufficient information to directly answer the user's question, **cease taking actions** and provide the final answer.
 
 ## Rules
-1. **Prioritize using the search_domain_knowledge tool** to retrieve domain documents to answer the user's question, because knowledge base is the **single source of truth**.
+1. **Prioritize retrieving domain documents to answer the user's question**, because knowledge base is the **single source of truth**.
 2. FORBID making any assumption or guess to answer the user's question. All sentences in your answer should be based on the information you retrieved using the tools.
 3. Your answer should be informative and concise without any unnecessary phrases.
 4. If the answer contains any reference or link, **keep it as it is**. E.g., Image/web path or URL.
-
-## Workflow example
-query: Where is Tokyo university located?
-thought: I need to use a tool to retrieve the domain knowledge to answer the question.
-action: search_domain_knowledge(query="Where is Tokyo university located?")
-observation: Beijing university is located in Beijing, China.
-thought: I cannot find any information about the location of Tokyo university in the domain documents. I need to try to search the web for more information.
-action: web_search(query="Where is Tokyo university located?")
-observation: Tokyo university is located in Tokyo, Japan.
-final answer: Tokyo, Japan.
+5. **DO NOT use the SAME TOOL more than 5 times**.
 """
 
 SYNTHESIZE_PROMPT = """

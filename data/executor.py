@@ -193,7 +193,7 @@ class Executor:
         chunks = [
             Chunk(
                 id=str(uuid.uuid4()),
-                page_num=index,
+                page_num=index if session.is_pptx else None,
                 semantic_text=text_pair.semantic_text,
                 keyword_text=text_pair.keyword_text,
                 retrieve_raw_file=text_pair.retrieve_raw_file,

@@ -1,13 +1,13 @@
 import os
 from langchain.tools import ToolRuntime, tool
-from langchain_community.utilities import GoogleSerperAPIWrapper
 from supervisor.search_context import SearchContext
 from grpc_protos.search.search_client import SearchClient
-import asyncio
 from data.model.matadata import Metadata
 from pathlib import Path
 from common.logger import get_logger
 from common.util import read_file
+from langchain_core.messages import ToolMessage
+from langgraph.types import Command
 
 logger = get_logger(__name__)
 
@@ -15,7 +15,7 @@ logger = get_logger(__name__)
 @tool
 async def search_domain_knowledge(
     query: str, runtime: ToolRuntime[SearchContext]
-) -> list[dict]:
+) -> Command:
     """Searches for documents in the domain knowledge base that are related to the given query.
     Returns a list of content blocks containing the related domain knowledge, or an error message.
 
@@ -39,7 +39,11 @@ async def search_domain_knowledge(
         texts: list[str] = []
         for file_name, chunk_ids in file_name_to_chunk_ids.items():
             for chunk_id in chunk_ids:
-                metadata: Metadata = _get_metadata(context.project, file_name)
+                try:
+                    metadata: Metadata = _get_metadata(context.project, file_name)
+                except Exception as e:
+                    logger.warning(f"Error getting metadata for file {file_name}: {e}")
+                    continue
 
                 # For production, search the chunk in postgres database
                 chunk = next((c for c in metadata.chunks if c.id == chunk_id), None)
@@ -54,6 +58,9 @@ async def search_domain_knowledge(
                         )
                     else:
                         path = Path(f"store/s3/processed/{context.project}/{file_name}")
+                    if not path.exists():
+                        logger.warning(f"File {path} not found")
+                        continue
                     content_blocks.append(read_file(path))
                 else:
                     texts.append(chunk.keyword_text)
@@ -61,30 +68,26 @@ async def search_domain_knowledge(
         if texts:
             content_blocks.append({"type": "text", "text": "\n---\n".join(texts)})
 
-        return content_blocks
-    except Exception as e:
-        return [{"type": "text", "text": f"Error searching domain documents: {str(e)}"}]
-
-
-@tool
-async def web_search(query: str) -> str:
-    """Searches the web for information related to the given query.
-    Returns a string containing the search results or an error message.
-
-    Args:
-        query: The query to search the web for.
-    """
-    try:
-        logger.info(f"Searching the web for query: {query}")
-
-        # Run the synchronous API call in an executor
-        loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(
-            None,
-            lambda: GoogleSerperAPIWrapper().run(query),
+        return Command(
+            update={
+                "messages": [
+                    ToolMessage(
+                        content=content_blocks, tool_call_id=runtime.tool_call_id
+                    )
+                ],
+            }
         )
     except Exception as e:
-        return f"Error searching the web: {e}"
+        return Command(
+            update={
+                "messages": [
+                    ToolMessage(
+                        content=f"Error searching domain documents: {str(e)}",
+                        tool_call_id=runtime.tool_call_id,
+                    )
+                ],
+            }
+        )
 
 
 def _get_metadata(project: str, file_name: str) -> Metadata:

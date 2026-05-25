@@ -1,7 +1,6 @@
 from langchain.agents import create_agent
 from langchain_core.language_models import BaseChatModel
 from supervisor.tools import (
-    web_search,
     search_domain_knowledge,
 )
 from supervisor.prompts import AGENT_PROMPT
@@ -10,7 +9,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 
 
 def get_agent(llm: BaseChatModel):
-    tools = [web_search, search_domain_knowledge]
+    tools = [search_domain_knowledge]
 
     return create_agent(
         llm,

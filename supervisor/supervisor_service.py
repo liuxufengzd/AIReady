@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 from supervisor.common import const
 from common.logger import get_logger
 from langfuse.langchain import CallbackHandler
+from langgraph.errors import GraphRecursionError
 
 logger = get_logger(__name__)
 
@@ -63,6 +64,9 @@ class SupervisorService:
                 )
 
                 return (q, result["messages"][-1].content)
+            except GraphRecursionError:
+                logger.warning("Recursion reached the maximum number of iterations")
+                return (q, "")
             except Exception:
                 logger.error(f"Error processing sub-question: {q}", exc_info=True)
                 return (q, "")
