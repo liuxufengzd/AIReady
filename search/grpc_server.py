@@ -34,7 +34,10 @@ class SearchServiceServicer(search_pb2_grpc.SearchServiceServicer):
                 chunks_dict = await retriever.query(request.query, filters=filters)
             return search_pb2.QueryResponse(
                 status=search_pb2.OK,
-                file_name_to_chunk_ids=chunks_dict,
+                results=[
+                    search_pb2.FileChunks(file_name=k, chunk_ids=v)
+                    for k, v in chunks_dict.items()
+                ],
             )
         except Exception as e:
             logger.exception(f"[{request.project}] Query failed: {e}")

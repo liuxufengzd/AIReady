@@ -51,19 +51,27 @@ class Importer:
         # Index the chunks of this file
         tasks = []
         for chunk in metadata.chunks:
-            metadata = {
+            search_metadata = {
                 "_file_name": metadata.file_name,
                 "_chunk_id": chunk.id,
                 **(metadata.extension or {}),
             }
             tasks.append(
                 self.semantic_client.store(
-                    [Document(page_content=chunk.semantic_text, metadata=metadata)]
+                    [
+                        Document(
+                            page_content=chunk.semantic_text, metadata=search_metadata
+                        )
+                    ]
                 )
             )
             tasks.append(
                 self.keyword_client.store(
-                    [Document(page_content=chunk.keyword_text, metadata=metadata)]
+                    [
+                        Document(
+                            page_content=chunk.keyword_text, metadata=search_metadata
+                        )
+                    ]
                 )
             )
         await asyncio.gather(*tasks)

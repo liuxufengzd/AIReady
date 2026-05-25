@@ -26,13 +26,16 @@ def _read_image(source: Path) -> dict[str, str]:
     mime_type = mimetypes.guess_type(source)[0]
     return {
         "type": "image_url",
-        "image_url": f"data:{mime_type};base64,{base64.b64encode(source.read_bytes()).decode('utf-8')}",
+        "image_url": {
+            "url": f"data:{mime_type};base64,{base64.b64encode(source.read_bytes()).decode('utf-8')}"
+        },
     }
 
 
 def _read_pdf(source: Path) -> dict[str, str]:
     return {
-        "type": "media",
+        "type": "file",
+        "source_type": "base64",
         "mime_type": "application/pdf",
         "data": base64.b64encode(source.read_bytes()).decode("utf-8"),
     }

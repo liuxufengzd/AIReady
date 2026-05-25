@@ -142,7 +142,7 @@ class SearchClient:
         if response.status != search_pb2.OK:
             raise RuntimeError(f"[{self.project}] Query failed: {response.error}")
 
-        return response.file_name_to_chunk_ids
+        return {fc.file_name: list(fc.chunk_ids) for fc in response.results}
 
     async def store(self, source_file_name: str) -> None:
         """

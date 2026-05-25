@@ -15,7 +15,7 @@ logger = get_logger(__name__)
 @tool
 async def search_domain_knowledge(
     query: str, runtime: ToolRuntime[SearchContext]
-) -> list[dict[str, str]] | str:
+) -> list[dict]:
     """Searches for documents in the domain knowledge base that are related to the given query.
     Returns a list of content blocks containing the related domain knowledge, or an error message.
 
@@ -23,6 +23,7 @@ async def search_domain_knowledge(
         query: The query to search for documents.
     """
     try:
+        logger.info(f"Searching domain knowledge for query: {query}")
         context = runtime.context
 
         async with SearchClient(
@@ -37,7 +38,6 @@ async def search_domain_knowledge(
         content_blocks: list[dict[str, str]] = []
         texts: list[str] = []
         for file_name, chunk_ids in file_name_to_chunk_ids.items():
-            file_path = Path(file_name)
             for chunk_id in chunk_ids:
                 metadata: Metadata = _get_metadata(context.project, file_name)
 
@@ -47,9 +47,7 @@ async def search_domain_knowledge(
                     logger.warning(f"Chunk {chunk_id} not found in file {file_name}")
                     continue
                 if chunk.retrieve_raw_file:
-                    if not file_path.exists():
-                        logger.warning(f"File {file_name} not found")
-                        continue
+                    file_path = Path(file_name)
                     if file_path.suffix == ".pptx":
                         path = Path(
                             f"store/s3/processed/{context.project}/{file_path.stem}/slide_{chunk.page_num}.png"
@@ -65,7 +63,7 @@ async def search_domain_knowledge(
 
         return content_blocks
     except Exception as e:
-        return f"Error searching domain documents: {e}"
+        return [{"type": "text", "text": f"Error searching domain documents: {str(e)}"}]
 
 
 @tool
@@ -77,6 +75,8 @@ async def web_search(query: str) -> str:
         query: The query to search the web for.
     """
     try:
+        logger.info(f"Searching the web for query: {query}")
+
         # Run the synchronous API call in an executor
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(

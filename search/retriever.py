@@ -36,10 +36,12 @@ class Retriever:
         chunk_ids_semantic = [
             (doc.metadata.get("_chunk_id"), doc.metadata.get("_file_name"))
             for doc in results[0]
+            if doc.metadata.get("_chunk_id") and doc.metadata.get("_file_name")
         ]
         chunk_ids_keyword = [
             (doc.metadata.get("_chunk_id"), doc.metadata.get("_file_name"))
             for doc in results[1]
+            if doc.metadata.get("_chunk_id") and doc.metadata.get("_file_name")
         ]
 
         chunks = self.reranker.fuse([chunk_ids_semantic, chunk_ids_keyword])[:top_k]

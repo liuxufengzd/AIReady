@@ -33,15 +33,16 @@ message QueryRequest {
   map<string, string> filters = 3;
 }
 
-// Wrapper message for a list of strings
-message StringList {
-  repeated string values = 1;
+// A file and its matching chunk IDs
+message FileChunks {
+  string file_name = 1;
+  repeated string chunk_ids = 2;
 }
 
 // Query response containing matching chunks and files
 message QueryResponse {
   StatusCode status = 1;
-  map<string, StringList> file_name_to_chunk_ids = 2;
+  repeated FileChunks results = 2;
   string error = 3;
 }
 

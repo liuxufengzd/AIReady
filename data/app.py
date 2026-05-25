@@ -67,7 +67,7 @@ async def start_extraction(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
-@app.post("/continue_extraction", response_model=ReviewRequest)
+@app.post("/continue_extraction", response_model=ReviewRequest | None)
 async def continue_extraction(
     session_id: str,
     approved: bool | None = None,

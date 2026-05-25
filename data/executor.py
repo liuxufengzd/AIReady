@@ -39,9 +39,6 @@ class _Session:
     current_page: int = 1
     previous_summary: str = ""
 
-    # The thread_id for the currently-running LangGraph invocation
-    active_thread_id: str = ""
-
 
 class Executor:
     """Wraps the LangGraph extraction graph and exposes HITL interfaces"""
@@ -94,8 +91,7 @@ class Executor:
         require_chunking: bool = False,
     ) -> ReviewRequest | None:
         """Resume the graph after the first human review"""
-        session = self._sessions[session_id]
-        config = {"configurable": {"thread_id": session.active_thread_id}}
+        config = {"configurable": {"thread_id": session_id}}
 
         response = ReviewResponse(
             approved=approved,
@@ -110,44 +106,37 @@ class Executor:
             if task.interrupts:
                 return self._build_review_request(session_id, state)
 
+        return await self._finalize(session_id, state.values)
+
     async def continue_after_extension_review(
         self,
         session_id: str,
         extension: BaseModel,
     ) -> ReviewRequest | None:
         """Resume the graph with the human-reviewed extension"""
-        session = self._sessions[session_id]
-        config = {"configurable": {"thread_id": session.active_thread_id}}
+        config = {"configurable": {"thread_id": session_id}}
         response = ReviewResponse(extension=extension)
         await self.graph.ainvoke(Command(resume=response), config)
 
-        # Handle the next slide if the file is a PPTX
-        values = self.graph.get_state(config).values
+        return await self._finalize(session_id, self.graph.get_state(config).values)
+
+    async def _finalize(self, session_id: str, values: dict) -> ReviewRequest | None:
+        """Advance the PPTX page counter and invoke the next slide, or upload and clean up."""
+        session = self._sessions[session_id]
         if session.is_pptx:
             session.previous_summary = values["text_pairs"][-1].semantic_text
             session.current_page += 1
             if session.current_page <= len(session.images):
-                # Start to handle the next slide
                 return await self._invoke(session_id)
-
-        # Index the file
-        await self._index_file(session.project, session.source.name)
-        
-        # Upload the metadata
         await self._upload_metadata(session_id)
-
-        # Upload the file
         await self._upload_file(session_id)
-
-        # Delete the session
+        await self._index_file(session.project, session.source.name)
         del self._sessions[session_id]
 
     async def _invoke(self, session_id: str) -> ReviewRequest:
         """Create a fresh LangGraph thread for the current PPTX page or the whole file, run until the interrupt"""
         session = self._sessions[session_id]
-        thread_id = str(uuid.uuid4())
-        session.active_thread_id = thread_id
-        config = {"configurable": {"thread_id": thread_id}}
+        config = {"configurable": {"thread_id": session_id}}
 
         if session.is_pptx:
             idx = session.current_page - 1
@@ -198,18 +187,18 @@ class Executor:
         """Combine and upload the metadata."""
         session = self._sessions[session_id]
         source = session.source
-        config = {"configurable": {"thread_id": session.active_thread_id}}
+        config = {"configurable": {"thread_id": session_id}}
         values = self.graph.get_state(config).values
 
         chunks = [
             Chunk(
                 id=str(uuid.uuid4()),
-                page_num=session.current_page if session.is_pptx else None,
+                page_num=index,
                 semantic_text=text_pair.semantic_text,
                 keyword_text=text_pair.keyword_text,
-                retrieve_raw_file=values.get("retrieve_raw_file", False),
+                retrieve_raw_file=text_pair.retrieve_raw_file,
             )
-            for text_pair in values["text_pairs"]
+            for index, text_pair in enumerate(values["text_pairs"], start=1)
         ]
 
         metadata = Metadata(

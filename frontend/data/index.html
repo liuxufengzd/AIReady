@@ -115,18 +115,16 @@
       return apiPost(base, "/start_extraction", { project, source, languages });
     }
 
-    function continueExtraction(base, sessionId, approved, text, requireChunking) {
-      const params = {
-        session_id: sessionId,
-        approved: String(approved),
-        require_chunking: String(requireChunking),
-      };
-      if (approved && text != null) params.text = text;
-      return apiPost(base, "/continue_extraction", params);
+    function continueExtraction(base, sessionId, approved, text, requireChunking, extension) {
+      const params = { session_id: sessionId };
+      if (approved !== null && approved !== undefined) params.approved = String(approved);
+      if (requireChunking !== null && requireChunking !== undefined) params.require_chunking = String(requireChunking);
+      if (text != null) params.text = text;
+      return apiPost(base, "/continue_extraction", params, extension ?? undefined);
     }
 
-    function postExtraction(base, sessionId, finalAnswer) {
-      return apiPost(base, "/post_extraction", { session_id: sessionId }, finalAnswer);
+    function postExtraction(base, sessionId, extension) {
+      return apiPost(base, "/post_extraction", { session_id: sessionId }, extension ?? null);
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -203,10 +201,10 @@
     // ═══════════════════════════════════════════════════════════════════════════
 
     const STEPS = [
-      { id: "setup",   label: "Setup",          desc: "Enter details" },
-      { id: "content", label: "Content Review", desc: "Review extracted text" },
-      { id: "final",   label: "Final Review",   desc: "Review search texts" },
-      { id: "success", label: "Complete",        desc: "Done" },
+      { id: "setup",   label: "Setup",              desc: "Enter details" },
+      { id: "content", label: "Content Review",     desc: "Review extracted text" },
+      { id: "final",   label: "Extension Review",   desc: "Review metadata extension" },
+      { id: "success", label: "Complete",            desc: "Done" },
     ];
 
     function StepBar({ step, slideNum }) {
@@ -424,24 +422,40 @@
     }
 
     function ContentReviewStep({ req, onSubmit }) {
-      const [view, setView]       = useState("preview");
-      const [text, setText]       = useState(req.content || "");
+      const [view, setView]         = useState("preview");
+      const [text, setText]         = useState(req.content || "");
       const [approved, setApproved] = useState(true);
       const [chunking, setChunking] = useState(false);
-      const [err, setErr]         = useState("");
+      const [extRaw, setExtRaw]     = useState("{}");
+      const [extErr, setExtErr]     = useState("");
+      const [err, setErr]           = useState("");
+
+      // When permit_reject=false the content is always processed regardless of decision.
+      const effectiveApproved = req.permit_reject ? approved : true;
 
       const handleSubmit = async () => {
-        setErr("");
-        if (approved && !text.trim()) {
+        setErr(""); setExtErr("");
+
+        let extension = null;
+        if (req.ask_extension) {
+          const trimmed = extRaw.trim();
+          if (trimmed && trimmed !== "{}") {
+            try { extension = JSON.parse(trimmed); }
+            catch (e) { setExtErr("Invalid JSON — " + e.message); return; }
+          }
+        }
+
+        if (effectiveApproved && !text.trim()) {
           setErr("Cannot approve empty content. Please add text or switch to Reject.");
           return;
         }
         try {
           await onSubmit({
             sessionId: req.session_id,
-            approved,
-            text: approved ? text : null,
-            requireChunking: approved ? chunking : false,
+            approved: effectiveApproved,
+            text: effectiveApproved ? text : null,
+            requireChunking: effectiveApproved ? chunking : false,
+            extension,
           });
         } catch (e) {
           setErr(e.message);
@@ -483,9 +497,7 @@
             {/* Content area */}
             <div>
               <div className="flex items-center justify-between mb-2.5">
-                <div className="flex items-center gap-2">
-                  <span className="text-sm font-semibold text-slate-700">Extracted Content</span>
-                </div>
+                <span className="text-sm font-semibold text-slate-700">Extracted Content</span>
                 <div className="flex border border-slate-200 rounded-lg overflow-hidden text-xs font-semibold">
                   {["preview", "edit"].map((m) => (
                     <button
@@ -517,35 +529,45 @@
               )}
             </div>
 
-            {/* Decision */}
-            <div>
-              <p className="text-sm font-semibold text-slate-700 mb-3">Your Decision</p>
-              <div className="grid grid-cols-2 gap-3">
-                <button
-                  onClick={() => setApproved(true)}
-                  className={`py-4 rounded-xl border-2 font-bold text-sm transition-all ${
-                    approved
-                      ? "border-green-500 bg-green-50 text-green-700 shadow shadow-green-100"
-                      : "border-slate-200 bg-white text-slate-400 hover:border-green-300 hover:text-green-600 hover:bg-green-50"
-                  }`}
-                >
-                  ✓&nbsp; Approve
-                </button>
-                <button
-                  onClick={() => setApproved(false)}
-                  className={`py-4 rounded-xl border-2 font-bold text-sm transition-all ${
-                    !approved
-                      ? "border-red-500 bg-red-50 text-red-700 shadow shadow-red-100"
-                      : "border-slate-200 bg-white text-slate-400 hover:border-red-300 hover:text-red-600 hover:bg-red-50"
-                  }`}
-                >
-                  ✗&nbsp; Reject
-                </button>
-              </div>
-            </div>
+            {/* Auto-process notice — shown when permit_reject=false (over token threshold) */}
+            {!req.permit_reject && (
+              <Alert
+                type="info"
+                msg="This document exceeds the token threshold. It will be automatically processed and chunked — rejection is not available."
+              />
+            )}
 
-            {/* Chunking option — only shown when approved AND ask_chunking=true */}
-            {approved && req.ask_chunking && (
+            {/* Decision — only shown when user can reject */}
+            {req.permit_reject && (
+              <div>
+                <p className="text-sm font-semibold text-slate-700 mb-3">Your Decision</p>
+                <div className="grid grid-cols-2 gap-3">
+                  <button
+                    onClick={() => setApproved(true)}
+                    className={`py-4 rounded-xl border-2 font-bold text-sm transition-all ${
+                      approved
+                        ? "border-green-500 bg-green-50 text-green-700 shadow shadow-green-100"
+                        : "border-slate-200 bg-white text-slate-400 hover:border-green-300 hover:text-green-600 hover:bg-green-50"
+                    }`}
+                  >
+                    ✓&nbsp; Approve
+                  </button>
+                  <button
+                    onClick={() => setApproved(false)}
+                    className={`py-4 rounded-xl border-2 font-bold text-sm transition-all ${
+                      !approved
+                        ? "border-red-500 bg-red-50 text-red-700 shadow shadow-red-100"
+                        : "border-slate-200 bg-white text-slate-400 hover:border-red-300 hover:text-red-600 hover:bg-red-50"
+                    }`}
+                  >
+                    ✗&nbsp; Reject
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Chunking option — only shown when effectively approved AND ask_chunking=true */}
+            {effectiveApproved && req.ask_chunking && (
               <div className="p-4 bg-amber-50 border border-amber-200 rounded-xl">
                 <label className="flex items-start gap-3 cursor-pointer group">
                   <input
@@ -570,11 +592,37 @@
             )}
 
             {/* Rejection note */}
-            {!approved && (
+            {req.permit_reject && !approved && (
               <Alert
                 type="warn"
-                msg="This content will be rejected. The extraction pipeline will handle the rejection accordingly."
+                msg="This content will be rejected. The pipeline will use VLM to generate alternative keyword and semantic texts."
               />
+            )}
+
+            {/* Metadata extension input — only shown when ask_extension=true (user-only input) */}
+            {req.ask_extension && (
+              <div className="p-5 bg-violet-50 border border-violet-200 rounded-xl space-y-3">
+                <div className="flex items-center gap-2">
+                  <span className="text-sm font-bold text-violet-900">📋 Metadata Extension</span>
+                  <span className="text-[11px] font-semibold text-violet-600 bg-violet-100 px-2 py-0.5 rounded-full">
+                    User input only
+                  </span>
+                </div>
+                <p className="text-xs text-violet-700 leading-relaxed">
+                  Enter the document's metadata extension as a JSON object. Leave as{" "}
+                  <code className="bg-violet-100 px-1 rounded font-mono">{"{}"}</code> or empty if not needed —
+                  the LLM will attempt to extract it automatically otherwise.
+                </p>
+                {extErr && <Alert type="error" msg={extErr} onClose={() => setExtErr("")} />}
+                <textarea
+                  value={extRaw}
+                  onChange={(e) => { setExtRaw(e.target.value); setExtErr(""); }}
+                  rows={8}
+                  placeholder={'{\n  "key": "value"\n}'}
+                  className="w-full px-4 py-3 border border-violet-300 rounded-xl text-xs font-mono leading-relaxed focus:ring-2 focus:ring-violet-400 focus:border-transparent resize-y transition-all bg-white"
+                  spellCheck={false}
+                />
+              </div>
             )}
 
             <button
@@ -589,148 +637,27 @@
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // STEP 3 — FINAL REVIEW
+    // STEP 3 — EXTENSION REVIEW
+    // Shown only when continue_extraction returns a ReviewRequest (LLM extracted
+    // an extension and needs human sign-off via post_extraction).
     // ═══════════════════════════════════════════════════════════════════════════
 
-    function TextListItem({ index, value, onChange, onRemove }) {
-      const [view, setView] = useState("preview");
-
-      return (
-        <div className="border border-slate-200 rounded-xl bg-white overflow-hidden">
-          {/* Item toolbar */}
-          <div className="flex items-center justify-between px-3 py-2 bg-slate-50 border-b border-slate-200">
-            <span className="text-xs text-slate-400 font-mono font-semibold">#{index + 1}</span>
-            <div className="flex items-center gap-2">
-              <div className="flex border border-slate-200 rounded-lg overflow-hidden text-xs font-semibold">
-                {["preview", "edit"].map((m) => (
-                  <button
-                    key={m}
-                    onClick={() => setView(m)}
-                    className={`px-3 py-1 transition-colors ${
-                      view === m
-                        ? "bg-slate-800 text-white"
-                        : "bg-white text-slate-500 hover:bg-slate-50"
-                    }`}
-                  >
-                    {m === "preview" ? "👁 Preview" : "✏️ Edit"}
-                  </button>
-                ))}
-              </div>
-              <button
-                onClick={onRemove}
-                title="Remove"
-                className="w-6 h-6 flex items-center justify-center text-slate-300 hover:text-red-500 hover:bg-red-50 rounded-lg transition-all"
-              >
-                ✕
-              </button>
-            </div>
-          </div>
-
-          {/* Content area */}
-          <div className="p-3">
-            {view === "preview" ? (
-              <div
-                className="md text-sm leading-relaxed"
-                style={{ minHeight: 60 }}
-                dangerouslySetInnerHTML={{
-                  __html: (() => {
-                    if (!value || !value.trim())
-                      return '<p style="color:#94a3b8;font-style:italic;font-size:0.8em">Empty — switch to Edit to add content.</p>';
-                    try { return marked.parse(value); }
-                    catch { return `<pre style="white-space:pre-wrap;font-size:0.8em">${value}</pre>`; }
-                  })(),
-                }}
-              />
-            ) : (
-              <textarea
-                value={value}
-                onChange={(e) => onChange(e.target.value)}
-                rows={4}
-                className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs font-mono leading-relaxed focus:ring-2 focus:ring-blue-400 focus:border-transparent resize-y transition-all bg-white"
-                style={{ minHeight: 80 }}
-              />
-            )}
-          </div>
-        </div>
+    function ExtensionReviewStep({ req, onSubmit }) {
+      const [extRaw, setExtRaw] = useState(
+        req.extension ? JSON.stringify(req.extension, null, 2) : ""
       );
-    }
-
-    function TextListEditor({ label, icon, items, setItems }) {
-      const update = (i, v) => {
-        const n = [...items];
-        n[i] = v;
-        setItems(n);
-      };
-      const remove = (i) => setItems(items.filter((_, j) => j !== i));
-      const add    = () => setItems([...items, ""]);
-
-      return (
-        <div>
-          <div className="flex items-center justify-between mb-3">
-            <h3 className="text-sm font-bold text-slate-700">
-              {icon}&nbsp;{label}
-            </h3>
-            <span className="text-xs text-slate-400 bg-white border border-slate-200 px-2 py-0.5 rounded-full font-mono">
-              {items.length} item{items.length !== 1 ? "s" : ""}
-            </span>
-          </div>
-
-          <div className="space-y-2">
-            {items.length === 0 && (
-              <div className="text-center py-4 text-sm text-slate-400 italic border-2 border-dashed border-slate-200 rounded-xl">
-                No items. Click "Add item" below.
-              </div>
-            )}
-            {items.map((item, i) => (
-              <TextListItem
-                key={i}
-                index={i}
-                value={item}
-                onChange={(v) => update(i, v)}
-                onRemove={() => remove(i)}
-              />
-            ))}
-          </div>
-
-          <button
-            onClick={add}
-            className="mt-3 text-xs font-bold text-blue-600 hover:text-blue-700 flex items-center gap-1 transition-colors"
-          >
-            ＋ Add item
-          </button>
-        </div>
-      );
-    }
-
-    function FinalReviewStep({ req, onSubmit }) {
-      const fa = req.final_answer || {};
-      const [kwTexts,  setKwTexts]  = useState(fa.texts_for_keyword_search  || []);
-      const [semTexts, setSemTexts] = useState(fa.texts_for_semantic_search || []);
-      const [metaRaw,  setMetaRaw]  = useState(
-        fa.meta_extension ? JSON.stringify(fa.meta_extension, null, 2) : ""
-      );
-      const [metaErr, setMetaErr] = useState("");
-      const [err, setErr]         = useState("");
+      const [extErr, setExtErr] = useState("");
+      const [err, setErr]       = useState("");
 
       const handleSubmit = async () => {
-        setErr(""); setMetaErr("");
-        let meta = null;
-        if (metaRaw.trim()) {
-          try { meta = JSON.parse(metaRaw); }
-          catch (e) {
-            setMetaErr("Invalid JSON — " + e.message);
-            return;
-          }
+        setErr(""); setExtErr("");
+        let extension = null;
+        if (extRaw.trim()) {
+          try { extension = JSON.parse(extRaw); }
+          catch (e) { setExtErr("Invalid JSON — " + e.message); return; }
         }
         try {
-          await onSubmit({
-            sessionId: req.session_id,
-            finalAnswer: {
-              texts_for_keyword_search:  kwTexts.filter((t) => t.trim()),
-              texts_for_semantic_search: semTexts.filter((t) => t.trim()),
-              meta_extension: meta,
-            },
-          });
+          await onSubmit({ sessionId: req.session_id, extension });
         } catch (e) {
           setErr(e.message);
         }
@@ -745,9 +672,9 @@
                 📋
               </div>
               <div>
-                <h2 className="text-xl font-bold text-slate-800">Final Review</h2>
+                <h2 className="text-xl font-bold text-slate-800">Extension Review</h2>
                 <p className="text-slate-500 text-sm mt-0.5">
-                  Review and optionally edit the processed texts and metadata before uploading.
+                  Review the LLM-extracted metadata extension and edit if necessary before uploading.
                 </p>
               </div>
             </div>
@@ -756,58 +683,35 @@
           <div className="p-8 space-y-6">
             <Alert type="error" msg={err} onClose={() => setErr("")} />
 
-            {/* Summary badge */}
-            <div className="flex flex-wrap gap-2">
-              <span className="px-3 py-1 bg-blue-50 text-blue-700 text-xs font-bold rounded-full border border-blue-100">
-                🔍 {kwTexts.length} keyword text{kwTexts.length !== 1 ? "s" : ""}
-              </span>
-              <span className="px-3 py-1 bg-purple-50 text-purple-700 text-xs font-bold rounded-full border border-purple-100">
-                🧠 {semTexts.length} semantic text{semTexts.length !== 1 ? "s" : ""}
-              </span>
-              {metaRaw.trim() && (
-                <span className="px-3 py-1 bg-slate-50 text-slate-600 text-xs font-bold rounded-full border border-slate-200">
-                  📋 Metadata attached
-                </span>
-              )}
-            </div>
-
-            {/* Keyword Search Texts */}
-            <div className="p-5 bg-blue-50/50 rounded-2xl border border-blue-100">
-              <TextListEditor
-                label="Keyword Search Texts"
-                icon="🔍"
-                items={kwTexts}
-                setItems={setKwTexts}
+            {req.extension ? (
+              <Alert
+                type="info"
+                msg="The metadata extension below was automatically extracted by the LLM. Please review and correct any errors."
               />
-            </div>
-
-            {/* Semantic Search Texts */}
-            <div className="p-5 bg-purple-50/50 rounded-2xl border border-purple-100">
-              <TextListEditor
-                label="Semantic Search Texts"
-                icon="🧠"
-                items={semTexts}
-                setItems={setSemTexts}
+            ) : (
+              <Alert
+                type="warn"
+                msg="No metadata extension was extracted. You may optionally add one as JSON, or leave empty and confirm to upload."
               />
-            </div>
+            )}
 
-            {/* Meta Extension (JSON) */}
+            {/* Extension JSON editor */}
             <div>
               <div className="flex items-center justify-between mb-2.5">
                 <h3 className="text-sm font-bold text-slate-700">📋 Metadata Extension</h3>
                 <div className="flex items-center gap-2">
                   <span className="text-[10px] font-mono text-slate-400 uppercase tracking-widest">JSON</span>
-                  {metaRaw.trim() && !metaErr && (
+                  {extRaw.trim() && !extErr && (
                     <span className="text-[10px] text-green-600 font-semibold">✓ valid</span>
                   )}
                 </div>
               </div>
-              {metaErr && <Alert type="error" msg={metaErr} onClose={() => setMetaErr("")} />}
+              {extErr && <Alert type="error" msg={extErr} onClose={() => setExtErr("")} />}
               <textarea
-                value={metaRaw}
-                onChange={(e) => { setMetaRaw(e.target.value); setMetaErr(""); }}
-                rows={12}
-                placeholder='{\n  "key": "value"\n}'
+                value={extRaw}
+                onChange={(e) => { setExtRaw(e.target.value); setExtErr(""); }}
+                rows={14}
+                placeholder={'{\n  "key": "value"\n}'}
                 className="w-full px-4 py-3 border border-slate-300 rounded-xl text-xs font-mono leading-relaxed focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-y transition-all bg-slate-50"
                 spellCheck={false}
               />
@@ -885,16 +789,27 @@
         setStep("content");
       });
 
-      // Step 2 → Step 3
-      const handleContinue = withLoad("Processing review…", async ({ sessionId, approved, text, requireChunking }) => {
-        const result = await continueExtraction(apiBase, sessionId, approved, text, requireChunking);
-        setReq(result);
-        setStep("final");
+      // Step 2 → Step 3 (extension review) OR back to Step 2 (next PPTX slide) OR Step 4 (success)
+      const handleContinue = withLoad("Processing review…", async ({ sessionId, approved, text, requireChunking, extension }) => {
+        const result = await continueExtraction(apiBase, sessionId, approved, text, requireChunking, extension);
+        if (result === null || result === undefined) {
+          // Graph reached END with no further interrupts → done
+          setStep("success");
+        } else if (result.review_type === "extension") {
+          // LLM extracted extension → _review_extension interrupt → show extension review
+          setReq(result);
+          setStep("final");
+        } else {
+          // Next PPTX slide → loop back to content review
+          setReq(result);
+          setSlideNum((n) => n + 1);
+          setStep("content");
+        }
       });
 
       // Step 3 → Success or back to Step 2 (PPT loop)
-      const handlePost = withLoad("Uploading to knowledge base…", async ({ sessionId, finalAnswer }) => {
-        const result = await postExtraction(apiBase, sessionId, finalAnswer);
+      const handlePost = withLoad("Uploading to knowledge base…", async ({ sessionId, extension }) => {
+        const result = await postExtraction(apiBase, sessionId, extension);
         if (result === null || result === undefined) {
           // Null → workflow complete
           setStep("success");
@@ -950,11 +865,11 @@
             )}
 
             {step === "content" && req && (
-              <ContentReviewStep req={req} onSubmit={handleContinue} />
+              <ContentReviewStep key={slideNum} req={req} onSubmit={handleContinue} />
             )}
 
             {step === "final" && req && (
-              <FinalReviewStep req={req} onSubmit={handlePost} />
+              <ExtensionReviewStep req={req} onSubmit={handlePost} />
             )}
 
             {step === "success" && <SuccessStep onNew={handleNew} />}

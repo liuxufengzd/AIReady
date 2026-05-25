@@ -1,9 +1,15 @@
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 
 class ReviewRequest(BaseModel):
     session_id: str | None = Field(
         default=None, description="The session id of the extraction operation."
+    )
+    review_type: Literal["content", "extension"] = Field(
+        default="content",
+        description="Discriminates the interrupt kind: 'content' for the first text-approval step, 'extension' for the LLM-extracted metadata review step.",
     )
     content: str | None = Field(default=None, description="The content to review.")
     ask_chunking: bool = Field(

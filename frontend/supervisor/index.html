@@ -1,0 +1,650 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Supervisor Q&amp;A</title>
+
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+
+  <!-- React 18 (production UMD) -->
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+
+  <!-- Babel Standalone (for JSX in-browser) -->
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <!-- Marked.js for markdown rendering -->
+  <script src="https://cdn.jsdelivr.net/npm/marked@13/marked.min.js"></script>
+
+  <style>
+    /* Loading spinner */
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .spinner { animation: spin 0.9s linear infinite; }
+
+    /* Fade-in for answer panel */
+    @keyframes fadeSlideIn {
+      from { opacity: 0; transform: translateY(10px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+    .answer-in { animation: fadeSlideIn 0.35s ease both; }
+
+    /* Markdown styles */
+    .md h1 { font-size: 1.35em; font-weight: 700; margin: 0.8em 0 0.4em; color: #1e293b; }
+    .md h2 { font-size: 1.15em; font-weight: 600; margin: 0.8em 0 0.4em; color: #1e293b; border-bottom: 1px solid #e2e8f0; padding-bottom: 0.25em; }
+    .md h3 { font-size: 1.05em; font-weight: 600; margin: 0.6em 0 0.3em; color: #334155; }
+    .md h4, .md h5, .md h6 { font-size: 0.95em; font-weight: 600; margin: 0.5em 0 0.25em; color: #475569; }
+    .md p { margin: 0.5em 0; line-height: 1.65; color: #334155; }
+    .md ul { list-style: disc; margin: 0.4em 0 0.4em 1.4em; }
+    .md ol { list-style: decimal; margin: 0.4em 0 0.4em 1.4em; }
+    .md li { margin: 0.2em 0; line-height: 1.55; color: #334155; }
+    .md code { background: #f1f5f9; color: #1d4ed8; padding: 0.1em 0.35em; border-radius: 4px; font-family: 'Courier New', monospace; font-size: 0.83em; }
+    .md pre { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 0.9em 1.1em; overflow-x: auto; margin: 0.6em 0; }
+    .md pre code { background: none; color: #334155; padding: 0; }
+    .md table { border-collapse: collapse; width: 100%; margin: 0.6em 0; font-size: 0.88em; }
+    .md th, .md td { border: 1px solid #e2e8f0; padding: 0.45em 0.8em; text-align: left; }
+    .md th { background: #f8fafc; font-weight: 600; color: #475569; }
+    .md blockquote { border-left: 3px solid #94a3b8; padding: 0.3em 0.9em; color: #64748b; background: #f8fafc; border-radius: 0 6px 6px 0; margin: 0.5em 0; }
+    .md a { color: #2563eb; text-decoration: underline; }
+    .md strong { font-weight: 700; color: #1e293b; }
+    .md em { font-style: italic; }
+    .md hr { border: none; border-top: 1px solid #e2e8f0; margin: 1em 0; }
+    .md img { max-width: 100%; height: auto; border-radius: 4px; }
+
+    /* Scrollbar */
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: #f1f5f9; border-radius: 3px; }
+    ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
+    ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+
+    input:focus, textarea:focus, select:focus { outline: none; }
+  </style>
+</head>
+<body class="bg-slate-50 min-h-screen antialiased">
+  <div id="root"></div>
+
+  <script type="text/babel">
+    "use strict";
+    const { useState, useMemo, useRef, useCallback, useId } = React;
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // API
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    async function callQuery(baseUrl, project, query, filters) {
+      const base = baseUrl.replace(/\/+$/, "");
+      const url  = `${base}/query`;
+
+      const body = { project, query };
+      if (filters && Object.keys(filters).length > 0) body.filters = filters;
+
+      let resp;
+      try {
+        resp = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+      } catch (e) {
+        throw new Error(
+          `Network error — is the API server running at ${base}?\n${e.message}`
+        );
+      }
+
+      if (!resp.ok) {
+        let detail = "";
+        try {
+          const j = await resp.json();
+          detail = j.detail
+            ? Array.isArray(j.detail)
+              ? JSON.stringify(j.detail, null, 2)
+              : String(j.detail)
+            : JSON.stringify(j);
+        } catch {
+          detail = await resp.text();
+        }
+        throw new Error(`[${resp.status}] ${detail}`);
+      }
+
+      const text = await resp.text();
+      // Response is a JSON-encoded string from FastAPI
+      try { return JSON.parse(text); } catch { return text; }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // PRIMITIVES
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    function Spinner({ size = 40, color = "#2563eb" }) {
+      return (
+        <div
+          className="spinner"
+          style={{
+            width: size,
+            height: size,
+            borderRadius: "50%",
+            border: `${size / 10}px solid #e2e8f0`,
+            borderTopColor: color,
+          }}
+        />
+      );
+    }
+
+    function Alert({ type = "error", msg, onClose }) {
+      if (!msg) return null;
+      const styles = {
+        error:   "bg-red-50 border-red-200 text-red-800",
+        warn:    "bg-amber-50 border-amber-200 text-amber-800",
+        info:    "bg-blue-50 border-blue-200 text-blue-800",
+        success: "bg-green-50 border-green-200 text-green-800",
+      };
+      const icons = { error: "⚠", warn: "⚡", info: "ℹ", success: "✓" };
+      return (
+        <div className={`mb-4 p-3.5 rounded-xl border flex items-start gap-2.5 ${styles[type]}`}>
+          <span className="flex-shrink-0 font-bold mt-0.5">{icons[type]}</span>
+          <pre className="flex-1 text-xs whitespace-pre-wrap break-all font-sans">{msg}</pre>
+          {onClose && (
+            <button
+              onClick={onClose}
+              className="flex-shrink-0 opacity-50 hover:opacity-100 transition-opacity ml-1"
+            >
+              ✕
+            </button>
+          )}
+        </div>
+      );
+    }
+
+    function MdPreview({ text }) {
+      const html = useMemo(() => {
+        if (!text || !text.trim())
+          return '<p style="color:#94a3b8;font-style:italic">No answer yet.</p>';
+        try { return marked.parse(text); }
+        catch { return `<pre style="white-space:pre-wrap">${text}</pre>`; }
+      }, [text]);
+
+      return (
+        <div
+          className="md text-sm leading-relaxed"
+          dangerouslySetInnerHTML={{ __html: html }}
+        />
+      );
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // FILTER ROW
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    function FilterRow({ id, filterKey, filterValue, onChange, onRemove, isOnly }) {
+      return (
+        <div className="flex items-center gap-2">
+          <input
+            type="text"
+            value={filterKey}
+            onChange={(e) => onChange(id, "key", e.target.value)}
+            placeholder="key"
+            className="w-36 px-3 py-2 border border-slate-300 rounded-lg text-sm font-mono focus:ring-2 focus:ring-indigo-400 focus:border-transparent transition-all bg-white"
+          />
+          <span className="text-slate-400 text-sm font-semibold flex-shrink-0">=</span>
+          <input
+            type="text"
+            value={filterValue}
+            onChange={(e) => onChange(id, "value", e.target.value)}
+            placeholder="value"
+            className="flex-1 px-3 py-2 border border-slate-300 rounded-lg text-sm font-mono focus:ring-2 focus:ring-indigo-400 focus:border-transparent transition-all bg-white"
+          />
+          <button
+            type="button"
+            onClick={() => onRemove(id)}
+            disabled={isOnly}
+            title="Remove filter"
+            className={`w-8 h-8 flex-shrink-0 rounded-lg flex items-center justify-center text-base transition-all ${
+              isOnly
+                ? "opacity-20 cursor-not-allowed bg-slate-100 text-slate-400"
+                : "bg-red-50 text-red-400 hover:bg-red-100 hover:text-red-600 border border-red-200"
+            }`}
+          >
+            ✕
+          </button>
+        </div>
+      );
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // QUERY FORM
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    let _nextId = 1;
+    const mkId = () => String(_nextId++);
+
+    function QueryForm({ apiBase, setApiBase, onSubmit, loading }) {
+      const [project,     setProject]     = useState("");
+      const [query,       setQuery]       = useState("");
+      const [showFilters, setShowFilters] = useState(false);
+      const [showAdv,     setShowAdv]     = useState(false);
+      const [err,         setErr]         = useState("");
+      const [filters, setFilters] = useState([{ id: mkId(), key: "", value: "" }]);
+
+      const addFilter = () =>
+        setFilters((prev) => [...prev, { id: mkId(), key: "", value: "" }]);
+
+      const removeFilter = (id) =>
+        setFilters((prev) => prev.filter((f) => f.id !== id));
+
+      const changeFilter = (id, field, val) =>
+        setFilters((prev) =>
+          prev.map((f) => (f.id === id ? { ...f, [field]: val } : f))
+        );
+
+      const buildFilters = () => {
+        const out = {};
+        for (const { key, value } of filters) {
+          const k = key.trim();
+          const v = value.trim();
+          if (k && v) out[k] = v;
+        }
+        return Object.keys(out).length > 0 ? out : null;
+      };
+
+      const submit = async (e) => {
+        e.preventDefault();
+        setErr("");
+        if (!project.trim()) { setErr("Project name is required."); return; }
+        if (!query.trim())   { setErr("Query is required.");         return; }
+
+        // Validate filter keys for duplicates
+        const keys = filters.map((f) => f.key.trim()).filter(Boolean);
+        if (new Set(keys).size !== keys.length) {
+          setErr("Duplicate filter keys are not allowed."); return;
+        }
+
+        try {
+          await onSubmit(project.trim(), query.trim(), buildFilters());
+        } catch (e) {
+          setErr(e.message);
+        }
+      };
+
+      return (
+        <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
+          {/* Card header */}
+          <div className="px-8 py-6 bg-gradient-to-br from-indigo-50 to-blue-50 border-b border-slate-100">
+            <div className="flex items-center gap-3">
+              <div className="w-8 h-8 bg-indigo-600 rounded-lg grid place-items-center text-white text-sm shadow shadow-indigo-200">
+                💬
+              </div>
+              <div>
+                <h2 className="text-xl font-bold text-slate-800">Ask a Question</h2>
+                <p className="text-slate-500 text-sm mt-0.5">
+                  Query the knowledge base with optional metadata filters.
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <div className="p-8">
+            <Alert type="error" msg={err} onClose={() => setErr("")} />
+
+            <form onSubmit={submit} className="space-y-5">
+              {/* Project */}
+              <div>
+                <label className="block text-sm font-semibold text-slate-700 mb-1.5">
+                  Project <span className="text-red-500">*</span>
+                </label>
+                <input
+                  type="text"
+                  value={project}
+                  onChange={(e) => setProject(e.target.value)}
+                  placeholder="e.g. machine-reports-2025"
+                  className="w-full px-4 py-2.5 border border-slate-300 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all"
+                />
+              </div>
+
+              {/* Query */}
+              <div>
+                <label className="block text-sm font-semibold text-slate-700 mb-1.5">
+                  Query <span className="text-red-500">*</span>
+                </label>
+                <textarea
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) submit(e);
+                  }}
+                  placeholder="Enter your question…"
+                  rows={4}
+                  className="w-full px-4 py-3 border border-slate-300 rounded-xl text-sm leading-relaxed focus:ring-2 focus:ring-indigo-500 focus:border-transparent resize-y transition-all"
+                  style={{ minHeight: 90 }}
+                />
+                <p className="text-xs text-slate-400 mt-1">Tip: Press Ctrl+Enter to submit.</p>
+              </div>
+
+              {/* Filters section */}
+              <div className="border border-slate-200 rounded-xl overflow-hidden">
+                <button
+                  type="button"
+                  onClick={() => setShowFilters(!showFilters)}
+                  className="w-full px-4 py-3 flex items-center justify-between text-sm hover:bg-slate-50 transition-colors"
+                >
+                  <span className="font-semibold text-slate-600 flex items-center gap-1.5">
+                    🔍 Metadata Filters
+                    {buildFilters() !== null && (
+                      <span className="inline-flex items-center justify-center w-5 h-5 text-[10px] font-bold bg-indigo-100 text-indigo-700 rounded-full">
+                        {Object.keys(buildFilters() || {}).length}
+                      </span>
+                    )}
+                  </span>
+                  <span className="text-slate-400 text-xs">{showFilters ? "▴ collapse" : "▾ expand"}</span>
+                </button>
+
+                {showFilters && (
+                  <div className="px-4 pb-5 pt-3 bg-slate-50 border-t border-slate-100 space-y-2.5">
+                    <p className="text-xs text-slate-500 mb-3">
+                      Add key/value pairs to narrow the search scope. Empty rows are ignored.
+                    </p>
+
+                    {filters.map((f) => (
+                      <FilterRow
+                        key={f.id}
+                        id={f.id}
+                        filterKey={f.key}
+                        filterValue={f.value}
+                        onChange={changeFilter}
+                        onRemove={removeFilter}
+                        isOnly={filters.length === 1}
+                      />
+                    ))}
+
+                    <button
+                      type="button"
+                      onClick={addFilter}
+                      className="mt-1 flex items-center gap-1.5 text-xs font-semibold text-indigo-600 hover:text-indigo-800 transition-colors px-2 py-1.5 rounded-lg hover:bg-indigo-50"
+                    >
+                      <span className="w-5 h-5 rounded-full border-2 border-current flex items-center justify-center font-bold leading-none">+</span>
+                      Add filter
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              {/* Advanced settings */}
+              <div className="border border-slate-200 rounded-xl overflow-hidden">
+                <button
+                  type="button"
+                  onClick={() => setShowAdv(!showAdv)}
+                  className="w-full px-4 py-3 flex items-center justify-between text-sm hover:bg-slate-50 transition-colors"
+                >
+                  <span className="font-semibold text-slate-600">⚙ Advanced Settings</span>
+                  <span className="text-slate-400 text-xs">{showAdv ? "▴ collapse" : "▾ expand"}</span>
+                </button>
+                {showAdv && (
+                  <div className="px-4 pb-5 pt-2 bg-slate-50 border-t border-slate-100">
+                    <label className="block text-xs font-semibold text-slate-600 mb-1.5">
+                      API Base URL
+                    </label>
+                    <input
+                      type="text"
+                      value={apiBase}
+                      onChange={(e) => setApiBase(e.target.value)}
+                      className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm font-mono bg-white focus:ring-2 focus:ring-indigo-400 focus:border-transparent transition-all"
+                    />
+                    <p className="text-xs text-slate-400 mt-1">
+                      Backend server URL (e.g. <code>http://localhost:8002</code>)
+                    </p>
+                  </div>
+                )}
+              </div>
+
+              <button
+                type="submit"
+                disabled={loading}
+                className={`w-full py-3.5 font-bold rounded-xl transition-all text-sm flex items-center justify-center gap-2.5 ${
+                  loading
+                    ? "bg-indigo-400 cursor-not-allowed text-white"
+                    : "bg-indigo-600 hover:bg-indigo-700 active:scale-[0.99] text-white shadow shadow-indigo-200"
+                }`}
+              >
+                {loading ? (
+                  <>
+                    <Spinner size={18} color="#fff" />
+                    Thinking…
+                  </>
+                ) : (
+                  "Ask →"
+                )}
+              </button>
+            </form>
+          </div>
+        </div>
+      );
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // ANSWER PANEL
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    function AnswerPanel({ answer, query, project, filters, elapsed }) {
+      const [copied, setCopied] = React.useState(false);
+
+      const copy = () => {
+        navigator.clipboard.writeText(answer).then(() => {
+          setCopied(true);
+          setTimeout(() => setCopied(false), 2000);
+        });
+      };
+
+      const filterEntries = filters ? Object.entries(filters) : [];
+
+      return (
+        <div className="answer-in bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
+          {/* Header */}
+          <div className="px-8 py-5 bg-gradient-to-br from-emerald-50 to-teal-50 border-b border-slate-100 flex items-start justify-between gap-4">
+            <div className="flex items-center gap-3 min-w-0">
+              <div className="w-8 h-8 bg-emerald-600 rounded-lg grid place-items-center text-white text-sm flex-shrink-0 shadow shadow-emerald-200">
+                ✦
+              </div>
+              <div className="min-w-0">
+                <h2 className="text-base font-bold text-slate-800">Answer</h2>
+                <p
+                  className="text-xs text-slate-500 mt-0.5 truncate"
+                  title={query}
+                >
+                  {query}
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center gap-2 flex-shrink-0">
+              {elapsed != null && (
+                <span className="text-[10px] font-mono text-slate-400 bg-white border border-slate-200 px-2 py-1 rounded-full">
+                  {(elapsed / 1000).toFixed(1)}s
+                </span>
+              )}
+              <button
+                onClick={copy}
+                title="Copy answer"
+                className={`text-xs font-semibold px-3 py-1.5 rounded-lg border transition-all ${
+                  copied
+                    ? "bg-green-50 text-green-700 border-green-200"
+                    : "bg-white text-slate-500 border-slate-200 hover:border-indigo-300 hover:text-indigo-600"
+                }`}
+              >
+                {copied ? "✓ Copied" : "Copy"}
+              </button>
+            </div>
+          </div>
+
+          {/* Context chips */}
+          <div className="px-8 py-3 border-b border-slate-100 flex flex-wrap items-center gap-2">
+            <span className="inline-flex items-center gap-1 px-2.5 py-1 bg-indigo-50 text-indigo-700 border border-indigo-100 rounded-full text-xs font-semibold">
+              📁 {project}
+            </span>
+            {filterEntries.map(([k, v]) => (
+              <span
+                key={k}
+                className="inline-flex items-center gap-1 px-2.5 py-1 bg-slate-100 text-slate-600 border border-slate-200 rounded-full text-xs font-mono"
+              >
+                {k}={v}
+              </span>
+            ))}
+          </div>
+
+          {/* Markdown answer */}
+          <div className="px-8 py-6">
+            <MdPreview text={answer} />
+          </div>
+        </div>
+      );
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // HISTORY ITEM
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    function HistoryItem({ item, onReuse }) {
+      const [open, setOpen] = React.useState(false);
+      return (
+        <div className="border border-slate-200 rounded-xl overflow-hidden bg-white">
+          <button
+            type="button"
+            onClick={() => setOpen((v) => !v)}
+            className="w-full px-4 py-3 flex items-start justify-between text-left hover:bg-slate-50 transition-colors gap-3"
+          >
+            <div className="min-w-0">
+              <p className="text-sm font-semibold text-slate-700 truncate">{item.query}</p>
+              <p className="text-xs text-slate-400 mt-0.5 font-mono">{item.project}</p>
+            </div>
+            <span className="text-slate-400 text-xs flex-shrink-0 mt-1">{open ? "▴" : "▾"}</span>
+          </button>
+          {open && (
+            <div className="px-4 pb-4 pt-0 border-t border-slate-100 bg-slate-50 space-y-3">
+              <div className="md text-sm pt-3">
+                <MdPreview text={item.answer} />
+              </div>
+              <button
+                type="button"
+                onClick={() => onReuse(item)}
+                className="text-xs font-semibold text-indigo-600 hover:text-indigo-800 transition-colors"
+              >
+                ↩ Reuse query
+              </button>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // ROOT APP
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    function App() {
+      const [apiBase,  setApiBase]  = React.useState("http://localhost:8002");
+      const [loading,  setLoading]  = React.useState(false);
+      const [answer,   setAnswer]   = React.useState(null);   // { text, query, project, filters, elapsed }
+      const [history,  setHistory]  = React.useState([]);
+      const [error,    setError]    = React.useState("");
+      const answerRef = React.useRef(null);
+
+      const handleSubmit = async (project, query, filters) => {
+        setError("");
+        setLoading(true);
+        const t0 = Date.now();
+        try {
+          const text = await callQuery(apiBase, project, query, filters);
+          const elapsed = Date.now() - t0;
+          const result = { text, query, project, filters, elapsed };
+          setAnswer(result);
+          setHistory((prev) => [{ ...result, id: Date.now() }, ...prev.slice(0, 19)]);
+          // Scroll to answer
+          setTimeout(() => {
+            answerRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+          }, 50);
+        } catch (e) {
+          setError(e.message);
+        } finally {
+          setLoading(false);
+        }
+      };
+
+      const handleReuse = (item) => {
+        // Scroll back to top
+        window.scrollTo({ top: 0, behavior: "smooth" });
+      };
+
+      return (
+        <div className="min-h-screen bg-slate-50">
+          {/* ── Sticky header ── */}
+          <header className="bg-white border-b border-slate-200 sticky top-0 z-10 shadow-sm">
+            <div className="max-w-3xl mx-auto px-4 sm:px-6 h-14 flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="w-8 h-8 bg-indigo-600 rounded-lg grid place-items-center text-white font-black text-xs shadow shadow-indigo-200">
+                  SV
+                </div>
+                <div className="leading-tight">
+                  <p className="text-sm font-bold text-slate-800">Supervisor Q&amp;A</p>
+                  <p className="text-[10px] text-slate-400 hidden sm:block">AI-Powered Document Query</p>
+                </div>
+              </div>
+              {history.length > 0 && (
+                <span className="text-[10px] font-semibold text-slate-400 bg-slate-100 px-2.5 py-1 rounded-full">
+                  {history.length} {history.length === 1 ? "query" : "queries"}
+                </span>
+              )}
+            </div>
+          </header>
+
+          {/* ── Main ── */}
+          <main className="max-w-3xl mx-auto px-4 sm:px-6 py-10 space-y-6">
+            {/* Error banner (network / server errors shown outside the form) */}
+            {error && (
+              <Alert type="error" msg={error} onClose={() => setError("")} />
+            )}
+
+            <QueryForm
+              apiBase={apiBase}
+              setApiBase={setApiBase}
+              onSubmit={handleSubmit}
+              loading={loading}
+            />
+
+            {/* Answer */}
+            {answer && (
+              <div ref={answerRef}>
+                <AnswerPanel
+                  answer={answer.text}
+                  query={answer.query}
+                  project={answer.project}
+                  filters={answer.filters}
+                  elapsed={answer.elapsed}
+                />
+              </div>
+            )}
+
+            {/* History */}
+            {history.length > 1 && (
+              <div>
+                <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-3 px-1">
+                  Previous Queries
+                </h3>
+                <div className="space-y-2">
+                  {history.slice(1).map((item) => (
+                    <HistoryItem key={item.id} item={item} onReuse={handleReuse} />
+                  ))}
+                </div>
+              </div>
+            )}
+          </main>
+
+          {/* ── Footer ── */}
+          <footer className="text-center text-[10px] text-slate-300 py-6 font-mono">
+            Supervisor Q&amp;A · AI Document Query
+          </footer>
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+  </script>
+</body>
+</html>

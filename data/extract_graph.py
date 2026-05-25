@@ -37,7 +37,6 @@ class ExtractState(TypedDict):
     extracted_text: str
     text_pairs: Annotated[list[TextPair], operator.add]
     extension: BaseModel
-    retrieve_raw_file: bool
 
 
 class ExtractGraph:
@@ -67,6 +66,7 @@ class ExtractGraph:
             raise ValueError("Text is too long, try to split it into separate pages.")
         review_response: ReviewResponse = interrupt(
             ReviewRequest(
+                review_type="content",
                 content=text,
                 ask_extension=over_chunk_threshold,
                 token_num=token_num,
@@ -81,11 +81,14 @@ class ExtractGraph:
                 logger.info(f"Chunked text into {len(chunks)} chunks")
                 return {
                     "text_pairs": [
-                        TextPair(semantic_text=text, keyword_text=text)
+                        TextPair(
+                            semantic_text=text,
+                            keyword_text=text,
+                            retrieve_raw_file=False,
+                        )
                         for text in chunks
                     ],
                     "extension": review_response.extension,
-                    "retrieve_raw_file": False,
                 }
             token_num = self.llm.get_num_tokens(keyword_text)
             if token_num > const.EMBEDDING_TOKEN_LIMIT:
@@ -97,9 +100,12 @@ class ExtractGraph:
                 )
             return {
                 "text_pairs": [
-                    TextPair(semantic_text=semantic_text, keyword_text=keyword_text)
+                    TextPair(
+                        semantic_text=semantic_text,
+                        keyword_text=keyword_text,
+                        retrieve_raw_file=False,
+                    )
                 ],
-                "retrieve_raw_file": False,
             }
 
         logger.info("Text rejected by human review, extracting content using VLM")
@@ -109,8 +115,13 @@ class ExtractGraph:
         )
         keyword = await self.vlm_extractor.extract_keyword(source)
         return {
-            "text_pairs": [TextPair(semantic_text=summary, keyword_text=keyword)],
-            "retrieve_raw_file": True,
+            "text_pairs": [
+                TextPair(
+                    semantic_text=summary,
+                    keyword_text=keyword,
+                    retrieve_raw_file=True,
+                )
+            ],
         }
 
     async def _extract_metadata_extension(self, state: ExtractState) -> Command[str]:
@@ -145,7 +156,9 @@ class ExtractGraph:
     def _review_extension(self, state: ExtractState) -> dict:
         """Review the metadata extension"""
         review_response: ReviewResponse = interrupt(
-            ReviewRequest(extension=state.get("extension", None))
+            ReviewRequest(
+                review_type="extension", extension=state.get("extension", None)
+            )
         )
         return {"extension": review_response.extension}
 

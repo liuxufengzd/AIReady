@@ -52,28 +52,23 @@ class QueryRequest(_message.Message):
     filters: _containers.ScalarMap[str, str]
     def __init__(self, project: _Optional[str] = ..., query: _Optional[str] = ..., filters: _Optional[_Mapping[str, str]] = ...) -> None: ...
 
-class StringList(_message.Message):
-    __slots__ = ("values",)
-    VALUES_FIELD_NUMBER: _ClassVar[int]
-    values: _containers.RepeatedScalarFieldContainer[str]
-    def __init__(self, values: _Optional[_Iterable[str]] = ...) -> None: ...
+class FileChunks(_message.Message):
+    __slots__ = ("file_name", "chunk_ids")
+    FILE_NAME_FIELD_NUMBER: _ClassVar[int]
+    CHUNK_IDS_FIELD_NUMBER: _ClassVar[int]
+    file_name: str
+    chunk_ids: _containers.RepeatedScalarFieldContainer[str]
+    def __init__(self, file_name: _Optional[str] = ..., chunk_ids: _Optional[_Iterable[str]] = ...) -> None: ...
 
 class QueryResponse(_message.Message):
-    __slots__ = ("status", "file_name_to_chunk_ids", "error")
-    class FileNameToChunkIdsEntry(_message.Message):
-        __slots__ = ("key", "value")
-        KEY_FIELD_NUMBER: _ClassVar[int]
-        VALUE_FIELD_NUMBER: _ClassVar[int]
-        key: str
-        value: StringList
-        def __init__(self, key: _Optional[str] = ..., value: _Optional[_Union[StringList, _Mapping]] = ...) -> None: ...
+    __slots__ = ("status", "results", "error")
     STATUS_FIELD_NUMBER: _ClassVar[int]
-    FILE_NAME_TO_CHUNK_IDS_FIELD_NUMBER: _ClassVar[int]
+    RESULTS_FIELD_NUMBER: _ClassVar[int]
     ERROR_FIELD_NUMBER: _ClassVar[int]
     status: StatusCode
-    file_name_to_chunk_ids: _containers.MessageMap[str, StringList]
+    results: _containers.RepeatedCompositeFieldContainer[FileChunks]
     error: str
-    def __init__(self, status: _Optional[_Union[StatusCode, str]] = ..., file_name_to_chunk_ids: _Optional[_Mapping[str, StringList]] = ..., error: _Optional[str] = ...) -> None: ...
+    def __init__(self, status: _Optional[_Union[StatusCode, str]] = ..., results: _Optional[_Iterable[_Union[FileChunks, _Mapping]]] = ..., error: _Optional[str] = ...) -> None: ...
 
 class StoreRequest(_message.Message):
     __slots__ = ("project", "source_file_name")

@@ -11,6 +11,7 @@ from supervisor.prompts import (
 from pydantic import BaseModel, Field
 from supervisor.common import const
 from common.logger import get_logger
+from langfuse.langchain import CallbackHandler
 
 logger = get_logger(__name__)
 
@@ -29,12 +30,18 @@ class SupervisorService:
     ) -> str:
         llm = get_llm()
         agent = get_agent(llm)
+        callback_handler = CallbackHandler()
+        thread_id = str(uuid.uuid4())
 
         # Decompose the query into sub-questions
         result: QuestionAnalysisResult | None = await llm.with_structured_output(
             QuestionAnalysisResult
         ).ainvoke(
             QUERY_DECOMPOSITION_PROMPT.format(query=query),
+            config={
+                "configurable": {"thread_id": thread_id},
+                "callbacks": [callback_handler],
+            },
         )
         if result is None:
             return "Invalid question. Please check your question and try again."
@@ -42,8 +49,9 @@ class SupervisorService:
         # Process the sub-questions in parallel using asyncio.gather
         async def process_subquestion(q: str) -> tuple[str, str]:
             config = {
-                "configurable": {"thread_id": uuid.uuid4()},
+                "configurable": {"thread_id": thread_id},
                 "recursion_limit": const.MAX_ITERATIONS,  # limit the number of calling nodes in the agent graph
+                "callbacks": [callback_handler],
             }
             try:
                 result = await agent.ainvoke(
@@ -72,6 +80,10 @@ class SupervisorService:
             SYNTHESIZE_PROMPT.format(
                 context=context, query=query, language=result.language
             ),
+            config={
+                "configurable": {"thread_id": thread_id},
+                "callbacks": [callback_handler],
+            },
         )
 
         return synthesized_result.text
