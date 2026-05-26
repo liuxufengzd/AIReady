@@ -87,17 +87,20 @@ class Executor:
         session_id: str,
         approved: bool,
         text: str | None,
-        extension: BaseModel | None,
         require_chunking: bool = False,
     ) -> ReviewRequest | None:
         """Resume the graph after the first human review"""
-        config = {"configurable": {"thread_id": session_id}}
+        config = {
+            "configurable": {
+                "thread_id": session_id,
+                "search_meta_schema": self._sessions[session_id].meta_schema,
+            }
+        }
 
         response = ReviewResponse(
             approved=approved,
             content=text,
             require_chunking=require_chunking,
-            extension=extension,
         )
         await self.graph.ainvoke(Command(resume=response), config)
 
@@ -111,7 +114,7 @@ class Executor:
     async def continue_after_extension_review(
         self,
         session_id: str,
-        extension: BaseModel,
+        extension: dict | None,
     ) -> ReviewRequest | None:
         """Resume the graph with the human-reviewed extension"""
         config = {"configurable": {"thread_id": session_id}}
@@ -136,7 +139,12 @@ class Executor:
     async def _invoke(self, session_id: str) -> ReviewRequest:
         """Create a fresh LangGraph thread for the current PPTX page or the whole file, run until the interrupt"""
         session = self._sessions[session_id]
-        config = {"configurable": {"thread_id": session_id}}
+        config = {
+            "configurable": {
+                "thread_id": session_id,
+                "search_meta_schema": session.meta_schema,
+            }
+        }
 
         if session.is_pptx:
             idx = session.current_page - 1
@@ -147,7 +155,6 @@ class Executor:
             await self.graph.ainvoke(
                 {
                     "source": Path(session.images[idx]),
-                    "search_meta_schema": session.meta_schema,
                     "languages": session.languages,
                     "context": context,
                     "ask_chunking": False,
@@ -158,7 +165,6 @@ class Executor:
             await self.graph.ainvoke(
                 {
                     "source": session.source,
-                    "search_meta_schema": session.meta_schema,
                     "languages": session.languages,
                     "ask_chunking": True,
                 },

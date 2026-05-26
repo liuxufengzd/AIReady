@@ -61,7 +61,6 @@ Follow a "Thought-Action-Observation" loop, culminating in a precise final answe
 2. FORBID making any assumption or guess to answer the user's question. All sentences in your answer should be based on the information you retrieved using the tools.
 3. Your answer should be informative and concise without any unnecessary phrases.
 4. If the answer contains any reference or link, **keep it as it is**. E.g., Image/web path or URL.
-5. **DO NOT use the SAME TOOL more than 5 times**.
 """
 
 SYNTHESIZE_PROMPT = """
@@ -87,4 +86,29 @@ You are responsible to answer the question or provide guidance based on the prov
 
 # Question
 {query}
+"""
+
+PARTIAL_ANSWER_PROMPT = """
+# Role
+You are responsible for providing the best possible answer based on partially collected information.
+
+# Context
+The search process was interrupted before completion. Use only the information already gathered to give the most helpful response possible.
+
+# Rules
+- Base your answer ONLY on the provided partial information. Do not make assumptions or guesses.
+- Clearly indicate if the gathered information is insufficient to fully answer the question.
+- If the answer contains any reference or link, keep it as it is in your response.
+- Your answer should be concise, structured, and informative.
+
+# Output Format
+- Strictly output ONLY the answer.
+- Do not include any HTML, XML, or other markup tags.
+- Use \n\n to separate paragraphs.
+
+# Partial Information Collected
+{context}
+
+# Question
+{question}
 """

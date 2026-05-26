@@ -8,7 +8,7 @@ class ReviewResponse(BaseModel):
         description="Whether the human wants the approved text to be chunked.",
     )
     content: str | None = Field(default=None, description="The content approved.")
-    extension: BaseModel | None = Field(
+    extension: dict | None = Field(
         default=None,
         description="The extension of the file, reviewed or input by the human.",
     )

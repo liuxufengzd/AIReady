@@ -1,8 +1,6 @@
 import uuid
 from pathlib import Path
 from dotenv import load_dotenv
-from pydantic import BaseModel
-
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -10,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from data.common import const
 from data.executor import Executor
 from data.model.review_request import ReviewRequest
+from data.common.utils import parse_extension
 
 load_dotenv(Path(__file__).parent / ".env")
 app = FastAPI(
@@ -52,6 +51,7 @@ executor = Executor()
 async def start_extraction(
     project: str,
     source: str,
+    extension: str | None = None,
     languages: list[str] = const.DEFAULT_LANGUAGES,
 ) -> ReviewRequest:
     """Begin extraction. Returns the first ReviewRequest (text content to review)."""
@@ -62,6 +62,7 @@ async def start_extraction(
             project,
             Path(source).expanduser().resolve(),
             languages=languages,
+            meta_schema=parse_extension(extension) if extension else None,
         )
     except (FileNotFoundError, ValueError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -73,7 +74,6 @@ async def continue_extraction(
     approved: bool | None = None,
     text: str | None = None,
     require_chunking: bool | None = None,
-    extension: BaseModel | None = None,
 ) -> ReviewRequest | None:
     """Resume the graph after the first human review"""
     try:
@@ -82,7 +82,6 @@ async def continue_extraction(
             approved=approved,
             text=text,
             require_chunking=require_chunking,
-            extension=extension,
         )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -91,7 +90,7 @@ async def continue_extraction(
 @app.post("/post_extraction")
 async def post_extraction(
     session_id: str,
-    extension: BaseModel | None,
+    extension: dict | None = None,
 ) -> ReviewRequest | None:
     """Resume the graph with the human-reviewed extension(LLM extracted)"""
     try:

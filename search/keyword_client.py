@@ -22,20 +22,38 @@ class KeywordClient:
         self.client = AsyncElasticsearch(f"http://{self.es_host}:{self.es_port}")
 
     async def store(self, documents: list[Document]) -> None:
+        if not documents:
+            return
+
         if not await self.client.indices.exists(index=self.index):
-            await self.create_container_if_not_exists(documents[0].metadata.keys())
+            all_keys = {key for doc in documents for key in doc.metadata.keys()}
+            if const.TEXT_MAPPING_PROPERTY in all_keys:
+                raise ValueError(
+                    f"[Keyword] metadata key '{const.TEXT_MAPPING_PROPERTY}' conflicts with the text field"
+                )
+            await self.create_container_if_not_exists(all_keys)
+
+        success, failed = 0, 0
         for document in documents:
-            await self.client.index(
-                index=self.index,
-                body={
-                    const.TEXT_MAPPING_PROPERTY: document.page_content,
-                    **{
-                        keyword: document.metadata[keyword]
-                        for keyword in document.metadata
+            try:
+                metadata = {
+                    k: v
+                    for k, v in document.metadata.items()
+                    if k != const.TEXT_MAPPING_PROPERTY
+                }
+                await self.client.index(
+                    index=self.index,
+                    body={
+                        const.TEXT_MAPPING_PROPERTY: document.page_content,
+                        **metadata,
                     },
-                },
-            )
-        logger.info(f"[Keyword] Successfully stored {len(documents)} documents")
+                )
+                success += 1
+            except Exception as e:
+                failed += 1
+                logger.error(f"[Keyword] Failed to index document: {e}")
+
+        logger.info(f"[Keyword] Stored {success} documents, {failed} failed")
 
     async def query(
         self,

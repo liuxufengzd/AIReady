@@ -2,6 +2,10 @@ from data.common import const
 from pathlib import Path
 from data.model.matadata import Metadata
 from langchain_text_splitters import MarkdownTextSplitter
+from pydantic import BaseModel, Field, create_model
+from typing import Type
+import json
+import uuid
 
 
 def store_metadata(project: str, metadata: Metadata) -> None:
@@ -22,3 +26,28 @@ def chunk_md(
 ) -> list[str]:
     splitter = MarkdownTextSplitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
     return splitter.split_text(md_text)
+
+
+def parse_extension(extension: str) -> Type[BaseModel]:
+    """The extension should be like:
+    [
+        {"name":"field name","type":"str","default":"UNKNOWN","description":"field description"},
+        ...
+    ]
+    """
+    fields_config = json.loads(extension)
+    json.loads(extension)
+    fields = {}
+
+    for item in fields_config:
+        field_name = item["name"]
+        field_type = const.TYPE_MAPPING.get(item.get("type", "str"), str)
+        field_default = item.get("default", None)
+        field_description = item["description"]
+
+        fields[field_name] = (
+            field_type,
+            Field(default=field_default, description=field_description),
+        )
+    temp_model_name = f"DynamicModel_{uuid.uuid4().hex[:8]}"
+    return create_model(temp_model_name, **fields)

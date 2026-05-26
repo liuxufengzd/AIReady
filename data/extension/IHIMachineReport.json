@@ -1,0 +1,50 @@
+[
+    {
+        "name": "customer_name",
+        "type": "str",
+        "default": "unknown",
+        "description": "お客さま名"
+    },
+    {
+        "name": "machine_group",
+        "type": "str",
+        "default": "unknown",
+        "description": "機種"
+    },
+    {
+        "name": "machine_type",
+        "type": "str",
+        "default": "unknown",
+        "description": "型式"
+    },
+    {
+        "name": "manufacturing_factory",
+        "type": "str",
+        "default": "unknown",
+        "description": "製造工場"
+    },
+    {
+        "name": "non_conforming_work",
+        "type": "str",
+        "default": "unknown",
+        "description": "不適合発生工事"
+    },
+    {
+        "name": "non_conforming_work_name",
+        "type": "str",
+        "default": "unknown",
+        "description": "不適合工事名称"
+    },
+    {
+        "name": "work_classification",
+        "type": "str",
+        "default": "unknown",
+        "description": "工事種類"
+    },
+    {
+        "name": "date",
+        "type": "str",
+        "default": "unknown",
+        "description": "発生日"
+    }
+]

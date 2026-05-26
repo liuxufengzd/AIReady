@@ -1,6 +1,6 @@
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_serializer
 
 
 class ReviewRequest(BaseModel):
@@ -26,7 +26,15 @@ class ReviewRequest(BaseModel):
         default=None,
         description="Token count of the extracted text, shown to help the human decide on chunking.",
     )
-    extension: BaseModel | None = Field(
+    extension: Any = Field(
         default=None,
         description="The extension of the file, extracted by the LLM from the file content.",
     )
+
+    @field_serializer("extension")
+    def serialize_extension(self, extension: Any) -> dict[str, Any] | None:
+        if extension is None:
+            return None
+        if isinstance(extension, BaseModel):
+            return extension.model_dump()
+        return extension

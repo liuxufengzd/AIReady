@@ -1,12 +1,13 @@
 import asyncio
 import uuid
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, ToolMessage
 from supervisor.search_context import SearchContext
 from supervisor.agent import get_agent
 from common.util import get_llm
 from supervisor.prompts import (
     QUERY_DECOMPOSITION_PROMPT,
     SYNTHESIZE_PROMPT,
+    PARTIAL_ANSWER_PROMPT,
 )
 from pydantic import BaseModel, Field
 from supervisor.common import const
@@ -66,6 +67,23 @@ class SupervisorService:
                 return (q, result["messages"][-1].content)
             except GraphRecursionError:
                 logger.warning("Recursion reached the maximum number of iterations")
+                try:
+                    state = await agent.aget_state(config)
+                    messages = state.values.get("messages", [])
+                    tool_results = [
+                        msg.content
+                        for msg in messages
+                        if isinstance(msg, ToolMessage) and msg.content
+                    ]
+                    if tool_results:
+                        partial_context = "\n\n".join(tool_results)
+                        partial_answer = await llm.ainvoke(
+                            PARTIAL_ANSWER_PROMPT.format(question=q, context=partial_context),
+                            config={"callbacks": [callback_handler]},
+                        )
+                        return (q, partial_answer.text)
+                except Exception:
+                    logger.error("Failed to generate partial answer from collected context", exc_info=True)
                 return (q, "")
             except Exception:
                 logger.error(f"Error processing sub-question: {q}", exc_info=True)

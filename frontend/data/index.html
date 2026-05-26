@@ -111,8 +111,10 @@
       return text.trim() ? JSON.parse(text) : null;
     }
 
-    function startExtraction(base, project, source, languages) {
-      return apiPost(base, "/start_extraction", { project, source, languages });
+    function startExtraction(base, project, source, languages, extension) {
+      const params = { project, source, languages };
+      if (extension) params.extension = extension;
+      return apiPost(base, "/start_extraction", params);
     }
 
     function continueExtraction(base, sessionId, approved, text, requireChunking, extension) {
@@ -280,7 +282,38 @@
       const [source, setSource] = useState("");
       const [langs, setLangs] = useState("en, ja");
       const [showAdv, setShowAdv] = useState(false);
+      const [showExt, setShowExt] = useState(false);
+      const [extRaw, setExtRaw] = useState("");
+      const [extErr, setExtErr] = useState("");
       const [err, setErr] = useState("");
+
+      // Live-validate the JSON as the user types
+      const handleExtChange = (val) => {
+        setExtRaw(val);
+        if (!val.trim()) { setExtErr(""); return; }
+        try {
+          const parsed = JSON.parse(val);
+          if (!Array.isArray(parsed)) { setExtErr("Must be a JSON array."); return; }
+          for (let i = 0; i < parsed.length; i++) {
+            const f = parsed[i];
+            if (!f.name)        { setExtErr(`Item #${i + 1}: "name" is required.`); return; }
+            if (!f.description) { setExtErr(`Item #${i + 1}: "description" is required.`); return; }
+            const allowed = ["str", "int", "float", "bool"];
+            if (f.type && !allowed.includes(f.type)) {
+              setExtErr(`Item #${i + 1}: type "${f.type}" is not supported. Use: ${allowed.join(", ")}.`);
+              return;
+            }
+          }
+          setExtErr("");
+        } catch (e) {
+          setExtErr("Invalid JSON — " + e.message);
+        }
+      };
+
+      const fieldCount = useMemo(() => {
+        if (!extRaw.trim() || extErr) return 0;
+        try { const p = JSON.parse(extRaw); return Array.isArray(p) ? p.length : 0; } catch { return 0; }
+      }, [extRaw, extErr]);
 
       const submit = async (e) => {
         e.preventDefault();
@@ -289,8 +322,12 @@
         if (!source.trim())  { setErr("Source path is required."); return; }
         const languages = langs.split(",").map((s) => s.trim()).filter(Boolean);
         if (languages.length === 0) { setErr("At least one language is required."); return; }
+        if (extErr) { setErr("Fix the extension schema errors before submitting."); return; }
+
+        const extensionStr = extRaw.trim() && extRaw.trim() !== "[]" ? extRaw.trim() : null;
+
         try {
-          await onSubmit(project.trim(), source.trim(), languages);
+          await onSubmit(project.trim(), source.trim(), languages, extensionStr);
         } catch (e) {
           setErr(e.message);
         }
@@ -344,6 +381,60 @@
                 <p className="text-xs text-slate-400 mt-1.5">
                   Supported formats: <code className="text-slate-500">.pdf .pptx .jpg .jpeg .png</code>
                 </p>
+              </div>
+
+              {/* Metadata Extension Schema */}
+              <div className="border border-violet-200 rounded-xl overflow-hidden">
+                <button
+                  type="button"
+                  onClick={() => setShowExt(!showExt)}
+                  className="w-full px-4 py-3 flex items-center justify-between text-sm hover:bg-violet-50 transition-colors"
+                >
+                  <div className="flex items-center gap-2">
+                    <span className="font-semibold text-violet-700">📋 Metadata Extension Schema</span>
+                    {fieldCount > 0 && (
+                      <span className="text-[10px] font-bold px-2 py-0.5 bg-violet-100 text-violet-600 rounded-full">
+                        {fieldCount} field{fieldCount > 1 ? "s" : ""}
+                      </span>
+                    )}
+                    {extErr && (
+                      <span className="text-[10px] font-bold px-2 py-0.5 bg-red-100 text-red-600 rounded-full">
+                        invalid
+                      </span>
+                    )}
+                  </div>
+                  <span className="text-slate-400 text-xs">{showExt ? "▴ collapse" : "▾ expand"}</span>
+                </button>
+
+                {showExt && (
+                  <div className="px-4 pb-5 pt-3 bg-violet-50 border-t border-violet-100 space-y-3">
+                    <p className="text-xs text-violet-700 leading-relaxed">
+                      Paste a JSON array of field definitions. Each item must have{" "}
+                      <code className="bg-violet-100 px-1 rounded font-mono">name</code>,{" "}
+                      <code className="bg-violet-100 px-1 rounded font-mono">description</code>, and optionally{" "}
+                      <code className="bg-violet-100 px-1 rounded font-mono">type</code> (str · int · float · bool) and{" "}
+                      <code className="bg-violet-100 px-1 rounded font-mono">default</code>.
+                    </p>
+                    {extErr && <Alert type="error" msg={extErr} />}
+                    <textarea
+                      value={extRaw}
+                      onChange={(e) => handleExtChange(e.target.value)}
+                      rows={8}
+                      spellCheck={false}
+                      placeholder={'[\n  {"name": "customer_name", "type": "str", "default": "unknown", "description": "Customer name"}\n]'}
+                      className={`w-full px-3 py-2.5 border rounded-xl text-xs font-mono leading-relaxed focus:ring-2 focus:border-transparent resize-y transition-all bg-white ${
+                        extErr
+                          ? "border-red-300 focus:ring-red-400"
+                          : extRaw.trim() && !extErr
+                          ? "border-green-300 focus:ring-green-400"
+                          : "border-violet-200 focus:ring-violet-400"
+                      }`}
+                    />
+                    {extRaw.trim() && !extErr && (
+                      <p className="text-xs text-green-600 font-semibold">✓ Valid — {fieldCount} field{fieldCount !== 1 ? "s" : ""} defined</p>
+                    )}
+                  </div>
+                )}
               </div>
 
               {/* Advanced settings */}
@@ -782,8 +873,8 @@
       };
 
       // Step 1 → Step 2
-      const handleStart = withLoad("Starting extraction…", async (project, source, languages) => {
-        const result = await startExtraction(apiBase, project, source, languages);
+      const handleStart = withLoad("Starting extraction…", async (project, source, languages, extension) => {
+        const result = await startExtraction(apiBase, project, source, languages, extension);
         setReq(result);
         setSlideNum(1);
         setStep("content");

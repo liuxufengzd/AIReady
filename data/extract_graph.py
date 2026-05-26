@@ -9,6 +9,7 @@ from langgraph.types import Command, RetryPolicy, interrupt
 from langgraph.graph import StateGraph, END, START
 from common.util import get_llm
 from langchain_core.messages import HumanMessage
+from langchain_core.runnables import RunnableConfig
 from common.util import read_file
 from data.common.utils import chunk_md
 from langgraph.checkpoint.memory import InMemorySaver
@@ -29,14 +30,13 @@ logger = get_logger(__name__)
 
 class ExtractState(TypedDict):
     source: Path
-    search_meta_schema: Type[BaseModel]
     languages: list[str]
     context: str
     ask_chunking: bool
     # Raw extracted text, written by _extract and read by _review_text
     extracted_text: str
     text_pairs: Annotated[list[TextPair], operator.add]
-    extension: BaseModel
+    extension: dict | None
 
 
 class ExtractGraph:
@@ -124,9 +124,13 @@ class ExtractGraph:
             ],
         }
 
-    async def _extract_metadata_extension(self, state: ExtractState) -> Command[str]:
+    async def _extract_metadata_extension(
+        self, state: ExtractState, config: RunnableConfig
+    ) -> Command[str]:
         """Extract the metadata extension from the file"""
-        search_meta_schema = state.get("search_meta_schema")
+        search_meta_schema: Type[BaseModel] | None = (
+            config.get("configurable", {}).get("search_meta_schema")
+        )
         if search_meta_schema is not None and not state.get("extension", None):
             source = state.get("source")
             logger.info(f"Extracting metadata extension from {source}")
@@ -148,7 +152,7 @@ class ExtractGraph:
             }
             return Command(
                 goto="_review_extension",
-                update={"extension": search_meta_schema(**cleaned_data)},
+                update={"extension": cleaned_data},
             )
 
         return Command(goto=END)

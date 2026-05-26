@@ -29,6 +29,20 @@ class SemanticClient:
             await asyncio.to_thread(self.vectorstore.add_documents, batch)
         logger.info(f"[Semantic] Successfully stored {len(documents)} documents")
 
+    @staticmethod
+    def _to_chroma_filter(filters: dict[str, Any] | None) -> dict[str, Any] | None:
+        """Convert a plain key/value filter dict to ChromaDB's filter syntax.
+
+        ChromaDB requires exactly one top-level operator.  A dict with multiple
+        keys must be expressed as ``{"$and": [{"key": {"$eq": val}}, ...]}``.
+        """
+        if not filters:
+            return filters
+        if len(filters) == 1:
+            key, val = next(iter(filters.items()))
+            return {key: {"$eq": val}}
+        return {"$and": [{k: {"$eq": v}} for k, v in filters.items()]}
+
     async def query(
         self,
         query: str,
@@ -39,7 +53,7 @@ class SemanticClient:
         retriever = self.vectorstore.as_retriever(
             search_kwargs={
                 "k": top_k,
-                "filter": filters,
+                "filter": self._to_chroma_filter(filters),
             }
         )
         # Use asyncio.to_thread for blocking retriever operations
@@ -50,7 +64,9 @@ class SemanticClient:
         return documents
 
     async def delete(self, filters: dict[str, Any]):
-        await asyncio.to_thread(self.vectorstore.delete, where=filters)
+        await asyncio.to_thread(
+            self.vectorstore.delete, where=self._to_chroma_filter(filters)
+        )
         logger.info(f"[Semantic] Deleted documents matching filters: {filters}")
 
     async def delete_container(self):
