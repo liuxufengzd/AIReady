@@ -68,6 +68,8 @@
     "use strict";
     const { useState, useMemo, useRef, useCallback, useId } = React;
 
+    // (link renderer removed — target="_blank" is injected in MdPreview via post-processing)
+
     // ═══════════════════════════════════════════════════════════════════════════
     // API
     // ═══════════════════════════════════════════════════════════════════════════
@@ -160,7 +162,11 @@
       const html = useMemo(() => {
         if (!text || !text.trim())
           return '<p style="color:#94a3b8;font-style:italic">No answer yet.</p>';
-        try { return marked.parse(text); }
+        try {
+          const raw = marked.parse(text);
+          // Open all links in a new tab without touching the renderer
+          return raw.replace(/<a\s+href=/gi, '<a target="_blank" rel="noopener noreferrer" href=');
+        }
         catch { return `<pre style="white-space:pre-wrap">${text}</pre>`; }
       }, [text]);
 

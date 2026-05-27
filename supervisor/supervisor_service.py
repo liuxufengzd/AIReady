@@ -1,5 +1,7 @@
 import asyncio
+import re
 import uuid
+from urllib.parse import quote
 from langchain_core.messages import HumanMessage, ToolMessage
 from supervisor.search_context import SearchContext
 from supervisor.agent import get_agent
@@ -24,6 +26,9 @@ class QuestionAnalysisResult(BaseModel):
 
 
 class SupervisorService:
+    def __init__(self, files_base_url: str = "http://localhost:8002/files") -> None:
+        self.files_base_url = files_base_url
+
     async def query(
         self,
         project: str,
@@ -78,12 +83,17 @@ class SupervisorService:
                     if tool_results:
                         partial_context = "\n\n".join(tool_results)
                         partial_answer = await llm.ainvoke(
-                            PARTIAL_ANSWER_PROMPT.format(question=q, context=partial_context),
+                            PARTIAL_ANSWER_PROMPT.format(
+                                question=q, context=partial_context
+                            ),
                             config={"callbacks": [callback_handler]},
                         )
                         return (q, partial_answer.text)
                 except Exception:
-                    logger.error("Failed to generate partial answer from collected context", exc_info=True)
+                    logger.error(
+                        "Failed to generate partial answer from collected context",
+                        exc_info=True,
+                    )
                 return (q, "")
             except Exception:
                 logger.error(f"Error processing sub-question: {q}", exc_info=True)
@@ -108,4 +118,28 @@ class SupervisorService:
             },
         )
 
-        return synthesized_result.text
+        return self._refine_citations(synthesized_result.text, project)
+
+    def _refine_citations(self, text: str, project: str) -> str:
+        citation_map: dict[str, int] = {}
+        counter = 0
+
+        def replace(match: re.Match[str]) -> str:
+            nonlocal counter
+            file_name = match.group(1).strip()
+            if file_name not in citation_map:
+                counter += 1
+                citation_map[file_name] = counter
+            return f"[{citation_map[file_name]}]"
+
+        refined = re.sub(r"<agent-citation>(.*?)</agent-citation>", replace, text)
+
+        if citation_map:
+            base_url = f"{self.files_base_url}/{quote(project, safe='')}"
+            refs = "  \n".join(
+                f"[{idx}] [{file_name}]({base_url}/{quote(file_name, safe='')})"
+                for file_name, idx in sorted(citation_map.items(), key=lambda x: x[1])
+            )
+            refined = f"{refined}\n\n{refs}"
+
+        return refined

@@ -36,7 +36,6 @@ async def search_domain_knowledge(
             return "No relevant documents found for the query."
 
         content_blocks: list[dict[str, str]] = []
-        texts: list[str] = []
         for file_name, chunk_ids in file_name_to_chunk_ids.items():
             for chunk_id in chunk_ids:
                 try:
@@ -61,12 +60,41 @@ async def search_domain_knowledge(
                     if not path.exists():
                         logger.warning(f"File {path} not found")
                         continue
-                    content_blocks.append(read_file(path))
+                    boundary_start = {
+                        "type": "text",
+                        "text": (
+                            f"\n====== Start of Multimodal File ======\n"
+                            f"[File Name]: {file_name}\n"
+                            f"[File Content]:\n"
+                        ),
+                    }
+                    boundary_end = {
+                        "type": "text",
+                        "text": "\n====== End of Multimodal File ======\n",
+                    }
+                    content_blocks.extend(
+                        [boundary_start, read_file(path), boundary_end]
+                    )
                 else:
-                    texts.append(chunk.keyword_text)
-
-        if texts:
-            content_blocks.append({"type": "text", "text": "\n---\n".join(texts)})
+                    boundary_start = {
+                        "type": "text",
+                        "text": (
+                            f"\n====== Start of Text Chunk ======\n"
+                            f"[File Name]: {file_name}\n"
+                            f"[Chunk Content]:\n"
+                        ),
+                    }
+                    boundary_end = {
+                        "type": "text",
+                        "text": "\n====== End of Text Chunk ======\n",
+                    }
+                    content_blocks.extend(
+                        [
+                            boundary_start,
+                            {"type": "text", "text": chunk.keyword_text},
+                            boundary_end,
+                        ]
+                    )
 
         return Command(
             update={

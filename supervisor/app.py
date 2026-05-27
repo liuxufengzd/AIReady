@@ -1,8 +1,10 @@
+import os
 from pathlib import Path
 from dotenv import load_dotenv
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from supervisor.supervisor_service import SupervisorService
@@ -21,7 +23,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-service = SupervisorService()
+_FILES_DIR = Path(os.getenv("FILES_STORE", r"D:\Workspace\AIReady\store\s3\processed"))
+_FILES_DIR.mkdir(parents=True, exist_ok=True)
+app.mount("/files", StaticFiles(directory=str(_FILES_DIR)), name="files")
+
+_FILES_BASE_URL = os.getenv("FILES_BASE_URL", "http://localhost:8002/files")
+service = SupervisorService(files_base_url=_FILES_BASE_URL)
 
 
 class QueryRequest(BaseModel):

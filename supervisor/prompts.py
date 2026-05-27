@@ -61,6 +61,12 @@ Follow a "Thought-Action-Observation" loop, culminating in a precise final answe
 2. FORBID making any assumption or guess to answer the user's question. All sentences in your answer should be based on the information you retrieved using the tools.
 3. Your answer should be informative and concise without any unnecessary phrases.
 4. If the answer contains any reference or link, **keep it as it is**. E.g., Image/web path or URL.
+
+## Citations
+For EACH sentence in your answer, if it is based on the information you retrieved using the tools, you MUST include the citation in the format of <agent-citation>file name</agent-citation>.
+The file name is included in the tool response.
+Only include the exact file name in the citation, do not include any other text.
+E.g., The weather in Tokyo is sunny.<agent-citation>Tokyo_weather.pdf</agent-citation> The hotel is located in the center of Tokyo.<agent-citation>Tokyo_hotel_location.png</agent-citation>
 """
 
 SYNTHESIZE_PROMPT = """
@@ -80,6 +86,10 @@ You are responsible to answer the question or provide guidance based on the prov
 - Moderate Length: Keep paragraph length moderate, typically between 3 and 6 sentences. Avoid overly long or extremely short paragraphs.
 - Use Headings and/or Lists: If listing points, steps, or elements, use Numbered Lists (1. 2. 3. ...) or Bullet Points (* or -).
 - Prioritize Readability: Keep the response **simple, short and direct**, avoiding overly complex or convoluted sentence structures.
+
+## Citations
+Citations may represent in the Answer of the Question-Answer Pairs with the format of <agent-citation>file name</agent-citation>. KEEP the citations in your answer. NEVER remove or modify them.
+During your synthesis, you MUST include the citations in your answer.
 
 # Question-Answer Pairs
 {context}
@@ -105,6 +115,12 @@ The search process was interrupted before completion. Use only the information a
 - Strictly output ONLY the answer.
 - Do not include any HTML, XML, or other markup tags.
 - Use \n\n to separate paragraphs.
+
+## Citations
+For EACH sentence in your answer, if it is based on the information you retrieved using the tools, you MUST include the citation in the format of <agent-citation>file name</agent-citation>.
+The file name is included in the tool response.
+Only include the exact file name in the citation, do not include any other text.
+E.g., The weather in Tokyo is sunny.<agent-citation>Tokyo_weather.pdf</agent-citation> The hotel is located in the center of Tokyo.<agent-citation>Tokyo_hotel_location.png</agent-citation>
 
 # Partial Information Collected
 {context}
