@@ -14,6 +14,14 @@
 
   <!-- Babel Standalone (for JSX in-browser) -->
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script>
+    /* Babel 8 defaults to automatic JSX runtime (generates `import` statements),
+       which breaks UMD builds. Register a preset that forces the classic runtime
+       (React.createElement) so the compiled code works as a plain script. */
+    Babel.registerPreset("classic-react", {
+      presets: [[Babel.availablePresets["react"], { runtime: "classic" }]],
+    });
+  </script>
 
   <!-- Marked.js for markdown rendering -->
   <script src="https://cdn.jsdelivr.net/npm/marked@13/marked.min.js"></script>
@@ -64,7 +72,7 @@
 <body class="bg-slate-50 min-h-screen antialiased">
   <div id="root"></div>
 
-  <script type="text/babel">
+  <script type="text/babel" data-presets="classic-react">
     "use strict";
     const { useState, useMemo, useRef, useCallback, useId } = React;
 

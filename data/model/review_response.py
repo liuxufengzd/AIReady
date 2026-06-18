@@ -2,6 +2,10 @@ from pydantic import BaseModel, Field
 
 
 class ReviewResponse(BaseModel):
+    require_secondary_extraction: bool = Field(
+        default=False,
+        description="Whether the human wants the secondary extraction.",
+    )
     approved: bool = Field(default=True, description="approved or rejected")
     require_chunking: bool = Field(
         default=False,

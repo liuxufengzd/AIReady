@@ -75,9 +75,9 @@ async def continue_extraction(
     text: str | None = None,
     require_chunking: bool | None = None,
 ) -> ReviewRequest | None:
-    """Resume the graph after the first human review"""
+    """Resume the graph after the extracted content is reviewed by the human"""
     try:
-        return await executor.continue_after_first_review(
+        return await executor.continue_after_content_review(
             session_id,
             approved=approved,
             text=text,

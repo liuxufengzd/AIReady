@@ -14,6 +14,14 @@
 
   <!-- Babel Standalone (for JSX in-browser) -->
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script>
+    /* Babel 8 defaults to automatic JSX runtime (generates `import` statements),
+       which breaks UMD builds. Register a preset that forces the classic runtime
+       (React.createElement) so the compiled code works as a plain script. */
+    Babel.registerPreset("classic-react", {
+      presets: [[Babel.availablePresets["react"], { runtime: "classic" }]],
+    });
+  </script>
 
   <!-- Marked.js for markdown rendering -->
   <script src="https://cdn.jsdelivr.net/npm/marked@13/marked.min.js"></script>
@@ -58,7 +66,7 @@
 <body class="bg-slate-50 min-h-screen antialiased">
   <div id="root"></div>
 
-  <script type="text/babel">
+  <script type="text/babel" data-presets="classic-react">
     "use strict";
     const { useState, useMemo, useCallback, useEffect } = React;
 
@@ -203,10 +211,11 @@
     // ═══════════════════════════════════════════════════════════════════════════
 
     const STEPS = [
-      { id: "setup",   label: "Setup",              desc: "Enter details" },
-      { id: "content", label: "Content Review",     desc: "Review extracted text" },
-      { id: "final",   label: "Extension Review",   desc: "Review metadata extension" },
-      { id: "success", label: "Complete",            desc: "Done" },
+      { id: "setup",    label: "Setup",             desc: "Enter details" },
+      { id: "content",  label: "Content Review",    desc: "Review 1st extraction" },
+      { id: "content2", label: "2nd Extraction",    desc: "Review alternative text" },
+      { id: "final",    label: "Extension Review",  desc: "Review metadata extension" },
+      { id: "success",  label: "Complete",          desc: "Done" },
     ];
 
     function StepBar({ step, slideNum }) {
@@ -556,16 +565,27 @@
       return (
         <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
           {/* Header */}
-          <div className="px-8 py-6 bg-gradient-to-br from-green-50 to-emerald-50 border-b border-slate-100">
+          <div className={`px-8 py-6 border-b border-slate-100 bg-gradient-to-br ${req.is_second_extraction ? "from-orange-50 to-amber-50" : "from-green-50 to-emerald-50"}`}>
             <div className="flex items-start justify-between gap-4">
               <div className="flex items-center gap-3">
-                <div className="w-8 h-8 bg-green-600 rounded-lg grid place-items-center text-white text-sm flex-shrink-0">
-                  📝
+                <div className={`w-8 h-8 rounded-lg grid place-items-center text-white text-sm flex-shrink-0 ${req.is_second_extraction ? "bg-orange-500" : "bg-green-600"}`}>
+                  {req.is_second_extraction ? "🔄" : "📝"}
                 </div>
                 <div>
-                  <h2 className="text-xl font-bold text-slate-800">Content Review</h2>
+                  <div className="flex items-center gap-2">
+                    <h2 className="text-xl font-bold text-slate-800">
+                      {req.is_second_extraction ? "2nd Extraction Review" : "Content Review"}
+                    </h2>
+                    {req.is_second_extraction && (
+                      <span className="text-[10px] font-bold px-2 py-0.5 bg-orange-100 text-orange-600 rounded-full">
+                        Alternative method
+                      </span>
+                    )}
+                  </div>
                   <p className="text-slate-500 text-sm mt-0.5">
-                    Review the extracted text. You may edit it before approving.
+                    {req.is_second_extraction
+                      ? "The first extraction was rejected. Review this alternative extraction result."
+                      : "Review the extracted text. You may edit it before approving."}
                   </p>
                 </div>
               </div>
@@ -686,7 +706,10 @@
             {req.permit_reject && !approved && (
               <Alert
                 type="warn"
-                msg="This content will be rejected. The pipeline will use VLM to generate alternative keyword and semantic texts."
+                msg={req.is_second_extraction
+                  ? "This content will be rejected. The pipeline will fall back to VLM to generate alternative keyword and semantic texts."
+                  : "This content will be rejected. The pipeline will attempt a second extraction using an alternative method for you to review."
+                }
               />
             )}
 
@@ -880,7 +903,7 @@
         setStep("content");
       });
 
-      // Step 2 → Step 3 (extension review) OR back to Step 2 (next PPTX slide) OR Step 4 (success)
+      // Step 2 → Step 2b (second extraction review) OR Step 3 (extension review) OR back to Step 2 (next PPTX slide) OR Step 4 (success)
       const handleContinue = withLoad("Processing review…", async ({ sessionId, approved, text, requireChunking, extension }) => {
         const result = await continueExtraction(apiBase, sessionId, approved, text, requireChunking, extension);
         if (result === null || result === undefined) {
@@ -890,6 +913,10 @@
           // LLM extracted extension → _review_extension interrupt → show extension review
           setReq(result);
           setStep("final");
+        } else if (result.is_second_extraction) {
+          // First extraction was rejected → second extraction ready for review
+          setReq(result);
+          setStep("content2");
         } else {
           // Next PPTX slide → loop back to content review
           setReq(result);
@@ -957,6 +984,10 @@
 
             {step === "content" && req && (
               <ContentReviewStep key={slideNum} req={req} onSubmit={handleContinue} />
+            )}
+
+            {step === "content2" && req && (
+              <ContentReviewStep key="second" req={req} onSubmit={handleContinue} />
             )}
 
             {step === "final" && req && (

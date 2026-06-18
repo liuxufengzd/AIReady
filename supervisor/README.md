@@ -14,7 +14,6 @@ Query Decomposition (LLM)
 Sub-questions (parallel)
     │
     ├── ReAct Agent ──► search_domain_knowledge (gRPC → Search service)
-    │                ──► web_search (Google Serper API)
     │
     ▼
 Synthesize Answer (LLM)
@@ -63,7 +62,6 @@ Create a `.env` file in the `supervisor/` directory:
 
 ```env
 GOOGLE_API_KEY=...
-SERPER_API_KEY=...
 SEARCH_API_URL=localhost:50051
 ```
 

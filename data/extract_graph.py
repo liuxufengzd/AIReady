@@ -1,6 +1,5 @@
 """Currently only support small file mode: image, pdf, powerpoint."""
 
-import os
 from typing import Annotated, TypedDict
 import operator
 
@@ -19,11 +18,14 @@ from langchain_core.messages import SystemMessage
 from data.common.prompts import EXTENSION_PROMPT
 from data.common import const
 from data.extractor.mineru_extractor import MineruExtractor
+from data.extractor.llamaparse_extractor import LlamaParseExtractor
 from data.extractor.vlm_extractor import VLMExtractor
 from data.model.review_request import ReviewRequest
 from pathlib import Path
 from typing import Type
 from data.model.text_pair import TextPair
+import shutil
+
 
 logger = get_logger(__name__)
 
@@ -33,8 +35,10 @@ class ExtractState(TypedDict):
     languages: list[str]
     context: str
     ask_chunking: bool
-    # Raw extracted text, written by _extract and read by _review_text
+
+    # Raw extracted text, written by _extract and read by _review
     extracted_text: str
+    first_extraction: bool
     text_pairs: Annotated[list[TextPair], operator.add]
     extension: dict | None
 
@@ -42,21 +46,31 @@ class ExtractState(TypedDict):
 class ExtractGraph:
     def __init__(self):
         self.llm = get_llm()
-        self.initial_extractor = MineruExtractor()
+        self.first_extractor = MineruExtractor()
+        self.second_extractor = LlamaParseExtractor()
         self.vlm_extractor = VLMExtractor()
 
-    async def _extract(self, state: ExtractState) -> dict:
-        """Run initial extraction and store the extracted text in the state."""
+    async def _extract(self, state: ExtractState, config: RunnableConfig) -> dict:
+        """Run extraction using the appropriate extractor and store the extracted text in the state."""
         source = state.get("source")
         logger.info(f"Extracting text from {source}")
-        text = await self.initial_extractor.extract(
-            source,
-            api_url=os.environ.get("MINERU_API_URL"),
-            languages=state.get("languages"),
-        )
-        return {"extracted_text": text}
 
-    async def _review(self, state: ExtractState) -> dict:
+        first_extraction = state.get("first_extraction", True)
+        if first_extraction:
+            text = await self.first_extractor.extract(
+                project=config.get("configurable", {}).get("project"),
+                source=source,
+                languages=state.get("languages"),
+            )
+        else:
+            text = await self.second_extractor.extract(source)
+
+        return {
+            "extracted_text": text,
+            "first_extraction": first_extraction,
+        }
+
+    async def _review(self, state: ExtractState, config: RunnableConfig) -> dict:
         """Present extracted text for human review"""
         text = state.get("extracted_text", "")
         token_num = self.llm.get_num_tokens(text)
@@ -64,6 +78,9 @@ class ExtractGraph:
         ask_chunking = state.get("ask_chunking", True)
         if over_chunk_threshold and not ask_chunking:
             raise ValueError("Text is too long, try to split it into separate pages.")
+
+        first_extraction = state.get("first_extraction")
+
         review_response: ReviewResponse = interrupt(
             ReviewRequest(
                 review_type="content",
@@ -71,25 +88,41 @@ class ExtractGraph:
                 ask_extension=over_chunk_threshold,
                 token_num=token_num,
                 ask_chunking=not over_chunk_threshold and ask_chunking,
-                permit_reject=not over_chunk_threshold,
+                permit_reject=not over_chunk_threshold or first_extraction,
+                is_second_extraction=first_extraction is False,
             )
         )
+
+        source = state.get("source")
+        image_folder = Path(
+            f"store/s3/images/{config.get('configurable', {}).get('project')}/{source.name}"
+        )
+
+        if not review_response.approved and first_extraction:
+            # Clean the image store folder and start a new extraction
+            if image_folder.exists():
+                shutil.rmtree(image_folder)
+            return Command(goto="_extract", update={"first_extraction": False})
+
         if review_response.approved or over_chunk_threshold:
             keyword_text = semantic_text = review_response.content
             if review_response.require_chunking or over_chunk_threshold:
                 chunks = chunk_md(keyword_text)
                 logger.info(f"Chunked text into {len(chunks)} chunks")
-                return {
-                    "text_pairs": [
-                        TextPair(
-                            semantic_text=text,
-                            keyword_text=text,
-                            retrieve_raw_file=False,
-                        )
-                        for text in chunks
-                    ],
-                    "extension": review_response.extension,
-                }
+                return Command(
+                    goto="_extract_metadata_extension",
+                    update={
+                        "text_pairs": [
+                            TextPair(
+                                semantic_text=text,
+                                keyword_text=text,
+                                retrieve_raw_file=False,
+                            )
+                            for text in chunks
+                        ],
+                        "extension": review_response.extension,
+                    },
+                )
             token_num = self.llm.get_num_tokens(keyword_text)
             if token_num > const.EMBEDDING_TOKEN_LIMIT:
                 logger.info(
@@ -98,38 +131,49 @@ class ExtractGraph:
                 semantic_text = await self.vlm_extractor.extract_summary(
                     text=semantic_text
                 )
-            return {
-                "text_pairs": [
-                    TextPair(
-                        semantic_text=semantic_text,
-                        keyword_text=keyword_text,
-                        retrieve_raw_file=False,
-                    )
-                ],
-            }
+            return Command(
+                goto="_extract_metadata_extension",
+                update={
+                    "text_pairs": [
+                        TextPair(
+                            semantic_text=semantic_text,
+                            keyword_text=keyword_text,
+                            retrieve_raw_file=False,
+                        )
+                    ],
+                },
+            )
 
         logger.info("Text rejected by human review, extracting content using VLM")
-        source = state.get("source")
+
+        # Clean the image store folder
+        if image_folder.exists():
+            shutil.rmtree(image_folder)
+
+        # Extract the summary and keyword using VLM
         summary = await self.vlm_extractor.extract_summary(
             source, context=state.get("context", "")
         )
         keyword = await self.vlm_extractor.extract_keyword(source)
-        return {
-            "text_pairs": [
-                TextPair(
-                    semantic_text=summary,
-                    keyword_text=keyword,
-                    retrieve_raw_file=True,
-                )
-            ],
-        }
+        return Command(
+            goto="_extract_metadata_extension",
+            update={
+                "text_pairs": [
+                    TextPair(
+                        semantic_text=summary,
+                        keyword_text=keyword,
+                        retrieve_raw_file=True,
+                    )
+                ],
+            },
+        )
 
     async def _extract_metadata_extension(
         self, state: ExtractState, config: RunnableConfig
     ) -> Command[str]:
         """Extract the metadata extension from the file"""
-        search_meta_schema: Type[BaseModel] | None = (
-            config.get("configurable", {}).get("search_meta_schema")
+        search_meta_schema: Type[BaseModel] | None = config.get("configurable", {}).get(
+            "search_meta_schema"
         )
         if search_meta_schema is not None and not state.get("extension", None):
             source = state.get("source")
@@ -176,7 +220,6 @@ class ExtractGraph:
             .add_node(self._review_extension, retry_policy=retry_policy)
             .add_edge(START, "_extract")
             .add_edge("_extract", "_review")
-            .add_edge("_review", "_extract_metadata_extension")
             .add_edge("_review_extension", END)
         )
         return graph.compile(checkpointer=InMemorySaver())

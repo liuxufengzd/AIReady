@@ -1,4 +1,5 @@
 import asyncio
+import json
 import re
 import uuid
 from urllib.parse import quote
@@ -18,6 +19,16 @@ from langfuse.langchain import CallbackHandler
 from langgraph.errors import GraphRecursionError
 
 logger = get_logger(__name__)
+
+
+def _tool_content_to_str(content) -> str:
+    """Safely convert ToolMessage content (str, list, or dict) to a plain string."""
+    if isinstance(content, str):
+        return content
+    try:
+        return json.dumps(content, ensure_ascii=False, default=str)
+    except Exception:
+        return repr(content)
 
 
 class QuestionAnalysisResult(BaseModel):
@@ -76,7 +87,7 @@ class SupervisorService:
                     state = await agent.aget_state(config)
                     messages = state.values.get("messages", [])
                     tool_results = [
-                        msg.content
+                        _tool_content_to_str(msg.content)
                         for msg in messages
                         if isinstance(msg, ToolMessage) and msg.content
                     ]

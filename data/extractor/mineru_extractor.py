@@ -1,54 +1,34 @@
 import os
+import re
 import tempfile
 from pathlib import Path
-
 import httpx
 from mineru.cli import api_client
+import shutil
 
 from common.logger import get_logger
-import re
+from data.common import const
+from data.extractor.image_extractor import ImageExtractor
 
 logger = get_logger(__name__)
 
 
-def _prepare_local_api_temp_dir() -> None:
-    current_temp_dir = Path(tempfile.gettempdir())
-    if os.name == "nt" or not Path("/tmp").exists():
-        return
-    if not str(current_temp_dir).startswith("/mnt/"):
-        return
-
-    # vLLM/ZeroMQ IPC sockets fail on drvfs-backed temp directories under WSL.
-    os.environ["TMPDIR"] = "/tmp"
-    tempfile.tempdir = None
-
-
-def _build_form_data(
-    languages: list[str],
-    backend: str,
-    parse_method: str,
-    formula_enable: bool,
-    table_enable: bool,
-    image_analysis: bool,
-    server_url: str | None,
-    start_page_id: int,
-    end_page_id: int | None,
-) -> dict[str, str | list[str]]:
+def _build_form_data(languages: list[str]) -> dict[str, str | list[str]]:
     return api_client.build_parse_request_form_data(
         lang_list=languages,
-        backend=backend,
-        parse_method=parse_method,
-        formula_enable=formula_enable,
-        table_enable=table_enable,
-        image_analysis=image_analysis,
-        server_url=server_url,
-        start_page_id=start_page_id,
-        end_page_id=end_page_id,
+        backend="hybrid-auto-engine",
+        parse_method="auto",
+        formula_enable=True,
+        table_enable=True,
+        image_analysis=True,
+        server_url=None,
+        start_page_id=0,
+        end_page_id=None,
         return_md=True,
+        return_images=True,
         return_middle_json=False,
         return_model_output=False,
         return_content_list=False,
-        return_images=False,
         response_format_zip=True,
         return_original_file=False,
     )
@@ -61,59 +41,37 @@ def _read_extracted_markdown(extract_dir: Path) -> str:
 
     parts: list[str] = []
     for md_file in markdown_files:
-        content = md_file.read_text(encoding="utf-8")
-        if not content.strip():
+        content = md_file.read_text(encoding="utf-8").strip()
+        if not content:
             continue
         parts.append(content)
 
     if not parts:
         raise ValueError(f"Markdown output files are empty in: {extract_dir}")
 
-    res = "\n\n".join(parts)
-    res = re.sub(r"!\[.*?\]\(images/.*?\)", "", res)
-    return res.strip()
+    return "\n\n".join(parts)
 
 
 class MineruExtractor:
+    def __init__(self):
+        self.api_url = os.environ.get("MINERU_API_URL")
+        self.image_extractor = ImageExtractor()
+
     async def extract(
         self,
+        project: str,
         source: Path,
-        *,
-        languages: list[str] = ["en", "ja"],
-        backend: str = "hybrid-auto-engine",
-        parse_method: str = "auto",
-        formula_enable: bool = True,
-        table_enable: bool = True,
-        image_analysis: bool = True,
-        api_url: str | None = None,
-        server_url: str | None = None,
-        start_page_id: int = 0,
-        end_page_id: int | None = None,
+        languages: list[str] = const.DEFAULT_LANGUAGES,
     ) -> str:
         logger.info(f"Extracting text with MinerU for file: {source}")
         source_path = source.expanduser().resolve()
         if not source_path.is_file():
             raise FileNotFoundError(f"Input file does not exist: {source_path}")
 
-        if backend.endswith("http-client") and not server_url:
-            raise ValueError(f"backend={backend} requires server_url")
-
-        form_data = _build_form_data(
-            languages=languages,
-            backend=backend,
-            parse_method=parse_method,
-            formula_enable=formula_enable,
-            table_enable=table_enable,
-            image_analysis=image_analysis,
-            server_url=server_url,
-            start_page_id=start_page_id,
-            end_page_id=end_page_id,
-        )
         upload_assets = [
             api_client.UploadAsset(path=source_path, upload_name=source_path.name)
         ]
 
-        local_server: api_client.LocalAPIServer | None = None
         result_zip_path: Path | None = None
 
         async with httpx.AsyncClient(
@@ -121,25 +79,15 @@ class MineruExtractor:
             follow_redirects=True,
         ) as http_client:
             try:
-                if api_url:
-                    server_health = await api_client.fetch_server_health(
-                        http_client,
-                        api_client.normalize_base_url(api_url),
-                    )
-                else:
-                    _prepare_local_api_temp_dir()
-                    local_server = api_client.LocalAPIServer()
-                    base_url = local_server.start()
-                    logger.info(f"Started local mineru-api: {base_url}")
-                    server_health = await api_client.wait_for_local_api_ready(
-                        http_client,
-                        local_server,
-                    )
+                server_health = await api_client.fetch_server_health(
+                    http_client,
+                    api_client.normalize_base_url(self.api_url),
+                )
 
                 submit_response = await api_client.submit_parse_task(
                     base_url=server_health.base_url,
                     upload_assets=upload_assets,
-                    form_data=form_data,
+                    form_data=_build_form_data(languages=languages),
                 )
 
                 await api_client.wait_for_task_result(
@@ -152,14 +100,43 @@ class MineruExtractor:
                     submit_response=submit_response,
                     task_label=source_path.name,
                 )
-            finally:
-                if local_server is not None:
-                    local_server.stop()
+            except Exception as e:
+                logger.error(f"Error extracting text with MinerU: {e}")
+                raise e
 
         try:
             with tempfile.TemporaryDirectory(prefix="mineru-extract-") as tmp_dir:
                 extract_dir = Path(tmp_dir)
                 api_client.safe_extract_zip(result_zip_path, extract_dir)
-                return _read_extracted_markdown(extract_dir)
+                return await self._parse_images(project, source, extract_dir)
         finally:
             result_zip_path.unlink(missing_ok=True)
+
+    async def _parse_images(self, project: str, source: Path, extract_dir: Path) -> str:
+        text = _read_extracted_markdown(extract_dir)
+        image_id = 1
+        for image_file in sorted(extract_dir.rglob("*.jpg")):
+            # replace ![...](... file_name ...) with <Image .../> tag
+            pattern = re.compile(
+                r"!\[[^\]]*\]\([^)]*" + re.escape(image_file.stem) + r"[^)]*\)"
+            )
+            if not pattern.search(text):
+                continue
+
+            image_meta = await self.image_extractor.extract(image_file)
+            if image_meta.info_loss:
+                image_tag = (
+                    f"<Image\n  id={image_id}\n  content={image_meta.content}\n/>"
+                )
+                # move the file to image store
+                image_path = Path(
+                    f"store/s3/images/{project}/{source.name}/{image_id}.jpg"
+                )
+                image_path.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(image_file, image_path)
+                image_id += 1
+            else:
+                image_tag = image_meta.content
+            text = pattern.sub(image_tag + "\n", text)
+
+        return text

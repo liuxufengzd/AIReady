@@ -22,6 +22,10 @@ class ReviewRequest(BaseModel):
     permit_reject: bool = Field(
         default=True, description="Whether to permit the human to reject the text."
     )
+    is_second_extraction: bool = Field(
+        default=False,
+        description="Whether this is a review of the second extraction, triggered after the first was rejected.",
+    )
     token_num: int | None = Field(
         default=None,
         description="Token count of the extracted text, shown to help the human decide on chunking.",

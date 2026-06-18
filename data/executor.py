@@ -82,17 +82,18 @@ class Executor:
         self._sessions[session_id] = session
         return await self._invoke(session_id)
 
-    async def continue_after_first_review(
+    async def continue_after_content_review(
         self,
         session_id: str,
         approved: bool,
         text: str | None,
         require_chunking: bool = False,
     ) -> ReviewRequest | None:
-        """Resume the graph after the first human review"""
+        """Resume the graph after the extracted content is reviewed by the human"""
         config = {
             "configurable": {
                 "thread_id": session_id,
+                "project": self._sessions[session_id].project,
                 "search_meta_schema": self._sessions[session_id].meta_schema,
             }
         }
@@ -142,6 +143,7 @@ class Executor:
         config = {
             "configurable": {
                 "thread_id": session_id,
+                "project": session.project,
                 "search_meta_schema": session.meta_schema,
             }
         }

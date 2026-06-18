@@ -34,11 +34,6 @@ pip install -r search/requirements.txt
 Run from the **workspace root** (required so that `grpc_protos` and `common` packages are importable):
 
 ```bash
-# Linux / macOS
-python -m search.main
-
-# Windows (PowerShell)
-$env:PYTHONPATH = "d:\Workspace\AIReady"
 python -m search.main
 ```
 
