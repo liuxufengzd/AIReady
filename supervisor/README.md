@@ -74,7 +74,5 @@ pip install -r requirements.txt
 ### Run
 
 ```bash
-uvicorn supervisor.app:app --host localhost --port 8002
+python -m supervisor.main
 ```
-
-The API is available at `http://localhost:8002`. Interactive docs at `http://localhost:8002/docs`.

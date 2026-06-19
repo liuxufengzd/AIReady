@@ -11,7 +11,9 @@ from langchain_core.messages import HumanMessage
 from langchain_core.runnables import RunnableConfig
 from common.util import read_file
 from data.common.utils import chunk_md
-from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+import psycopg_pool
+from common.util import get_db_uri
 from data.model.review_response import ReviewResponse
 from pydantic import BaseModel
 from langchain_core.messages import SystemMessage
@@ -210,7 +212,22 @@ class ExtractGraph:
         )
         return {"extension": review_response.extension}
 
-    def build(self):
+    async def build(self):
+        """Build and compile the graph backed by a PostgreSQL checkpointer.
+
+        Returns a (compiled_graph, pool, checkpointer) tuple.
+        The caller owns the pool and must close it on shutdown.
+        """
+        pool = psycopg_pool.AsyncConnectionPool(
+            get_db_uri(),
+            open=False,
+            kwargs={"autocommit": True, "prepare_threshold": 0},
+        )
+        await pool.open()
+
+        checkpointer = AsyncPostgresSaver(pool)
+        await checkpointer.setup()
+
         retry_policy = RetryPolicy(max_attempts=3)
         graph = StateGraph(ExtractState)
         (
@@ -222,4 +239,4 @@ class ExtractGraph:
             .add_edge("_extract", "_review")
             .add_edge("_review_extension", END)
         )
-        return graph.compile(checkpointer=InMemorySaver())
+        return graph.compile(checkpointer=checkpointer), pool, checkpointer

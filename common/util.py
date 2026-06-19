@@ -3,6 +3,7 @@ from common import const
 from pathlib import Path
 import base64
 import mimetypes
+import os
 
 
 def get_llm(more_thinking: bool = False, temperature: float = 1.0):
@@ -39,3 +40,7 @@ def _read_pdf(source: Path) -> dict[str, str]:
         "mime_type": "application/pdf",
         "data": base64.b64encode(source.read_bytes()).decode("utf-8"),
     }
+
+
+def get_db_uri():
+    return f"postgresql://{os.getenv('DB_USER')}:{os.getenv('DB_PASSWORD')}@{os.getenv('DB_HOST')}:{os.getenv('DB_PORT')}/{os.getenv('DB_NAME')}"

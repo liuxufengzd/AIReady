@@ -5,7 +5,7 @@ import uuid
 from urllib.parse import quote
 from langchain_core.messages import HumanMessage, ToolMessage
 from supervisor.model.search_context import SearchContext
-from supervisor.agent import get_agent
+from supervisor.agent import create_agent_with_pool
 from common.util import get_llm
 from supervisor.prompts import (
     QUERY_DECOMPOSITION_PROMPT,
@@ -40,6 +40,37 @@ class QuestionAnalysisResult(BaseModel):
 class SupervisorService:
     def __init__(self, files_base_url: str = "http://localhost:8002/files") -> None:
         self.files_base_url = files_base_url
+        self.agent = None
+        self.pool = None
+        self.llm = None
+        self.checkpointer = None
+
+    async def _ensure_agent(self):
+        """Lazily initialise the agent and connection pool on first use."""
+        if self.agent is None:
+            self.llm = get_llm()
+            self.agent, self.pool, self.checkpointer = await create_agent_with_pool(
+                self.llm
+            )
+
+    async def _delete_thread(self, thread_id: str) -> None:
+        """Remove all LangGraph checkpoint data for a single-use thread."""
+        if self.checkpointer is None:
+            return
+        try:
+            await self.checkpointer.adelete_thread(thread_id)
+        except Exception:
+            logger.warning(
+                "Failed to delete checkpoints for thread %s", thread_id, exc_info=True
+            )
+
+    async def close(self):
+        """Close the connection pool. Call this on application shutdown."""
+        if self.pool is not None:
+            await self.pool.close()
+            self.pool = None
+            self.agent = None
+            self.checkpointer = None
 
     async def query(
         self,
@@ -47,13 +78,29 @@ class SupervisorService:
         query: str,
         filters: dict[str, str] | None = None,
     ) -> str:
-        llm = get_llm()
-        agent = get_agent(llm)
+        await self._ensure_agent()
         callback_handler = CallbackHandler()
         thread_id = str(uuid.uuid4())
 
+        try:
+            return await self._run_query(
+                project, query, filters, thread_id, callback_handler
+            )
+        finally:
+            # Threads are ephemeral (one UUID per request, never reused).
+            # Delete immediately so checkpoint rows never accumulate.
+            await self._delete_thread(thread_id)
+
+    async def _run_query(
+        self,
+        project: str,
+        query: str,
+        filters: dict[str, str] | None,
+        thread_id: str,
+        callback_handler,
+    ) -> str:
         # Decompose the query into sub-questions
-        result: QuestionAnalysisResult | None = await llm.with_structured_output(
+        result: QuestionAnalysisResult | None = await self.llm.with_structured_output(
             QuestionAnalysisResult
         ).ainvoke(
             QUERY_DECOMPOSITION_PROMPT.format(query=query),
@@ -73,7 +120,7 @@ class SupervisorService:
                 "callbacks": [callback_handler],
             }
             try:
-                result = await agent.ainvoke(
+                result = await self.agent.ainvoke(
                     {
                         "messages": [HumanMessage(content=f"Query: {q}")],
                         "filename_to_chunk_ids": {},
@@ -86,7 +133,7 @@ class SupervisorService:
             except GraphRecursionError:
                 logger.warning("Recursion reached the maximum number of iterations")
                 try:
-                    state = await agent.aget_state(config)
+                    state = await self.agent.aget_state(config)
                     messages = state.values.get("messages", [])
                     tool_results = [
                         _tool_content_to_str(msg.content)
@@ -95,7 +142,7 @@ class SupervisorService:
                     ]
                     if tool_results:
                         partial_context = "\n\n".join(tool_results)
-                        partial_answer = await llm.ainvoke(
+                        partial_answer = await self.llm.ainvoke(
                             PARTIAL_ANSWER_PROMPT.format(
                                 question=q, context=partial_context
                             ),
@@ -121,7 +168,7 @@ class SupervisorService:
         context = "\n---\n".join(
             [f"Question: {q}\nAnswer: {a}" for q, a in process_results]
         )
-        synthesized_result = await llm.ainvoke(
+        synthesized_result = await self.llm.ainvoke(
             SYNTHESIZE_PROMPT.format(
                 context=context, query=query, language=result.language
             ),

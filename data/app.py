@@ -1,4 +1,5 @@
 import uuid
+from contextlib import asynccontextmanager
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -11,9 +12,20 @@ from data.model.review_request import ReviewRequest
 from data.common.utils import parse_extension
 
 load_dotenv(Path(__file__).parent / ".env")
+
+executor = Executor()
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    yield
+    await executor.close()
+
+
 app = FastAPI(
     title="DataExtractor API",
     description="API for data extraction from a file",
+    lifespan=lifespan,
 )
 
 app.add_middleware(
@@ -22,8 +34,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-executor = Executor()
 
 # =============================================================================
 # HITL extraction flow

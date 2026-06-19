@@ -44,8 +44,34 @@ class Executor:
     """Wraps the LangGraph extraction graph and exposes HITL interfaces"""
 
     def __init__(self):
-        self.graph = ExtractGraph().build()
+        self.graph = None
+        self.pool = None
+        self.checkpointer = None
         self._sessions: dict[str, _Session] = {}
+
+    async def _ensure_graph(self):
+        """Lazily initialise the graph and connection pool on first use."""
+        if self.graph is None:
+            self.graph, self.pool, self.checkpointer = await ExtractGraph().build()
+
+    async def close(self):
+        """Close the connection pool. Call this on application shutdown."""
+        if self.pool is not None:
+            await self.pool.close()
+            self.pool = None
+            self.graph = None
+            self.checkpointer = None
+
+    async def _delete_thread(self, thread_id: str) -> None:
+        """Remove all checkpoint rows for a completed session thread."""
+        if self.checkpointer is None:
+            return
+        try:
+            await self.checkpointer.adelete_thread(thread_id)
+        except Exception:
+            logger.warning(
+                "Failed to delete checkpoints for thread %s", thread_id, exc_info=True
+            )
 
     async def start(
         self,
@@ -57,6 +83,7 @@ class Executor:
         meta_schema: Type[BaseModel] | None = None,
     ) -> ReviewRequest:
         """Validate the source file, initialise a session, and run the graph until the human-review interrupt."""
+        await self._ensure_graph()
         if not source.exists():
             raise FileNotFoundError(f"Source file not found: {source}")
         if not source.is_file():
@@ -90,6 +117,7 @@ class Executor:
         require_chunking: bool = False,
     ) -> ReviewRequest | None:
         """Resume the graph after the extracted content is reviewed by the human"""
+        await self._ensure_graph()
         config = {
             "configurable": {
                 "thread_id": session_id,
@@ -105,7 +133,7 @@ class Executor:
         )
         await self.graph.ainvoke(Command(resume=response), config)
 
-        state = self.graph.get_state(config)
+        state = await self.graph.aget_state(config)
         for task in state.tasks:
             if task.interrupts:
                 return self._build_review_request(session_id, state)
@@ -118,11 +146,13 @@ class Executor:
         extension: dict | None,
     ) -> ReviewRequest | None:
         """Resume the graph with the human-reviewed extension"""
+        await self._ensure_graph()
         config = {"configurable": {"thread_id": session_id}}
         response = ReviewResponse(extension=extension)
         await self.graph.ainvoke(Command(resume=response), config)
 
-        return await self._finalize(session_id, self.graph.get_state(config).values)
+        state = await self.graph.aget_state(config)
+        return await self._finalize(session_id, state.values)
 
     async def _finalize(self, session_id: str, values: dict) -> ReviewRequest | None:
         """Advance the PPTX page counter and invoke the next slide, or upload and clean up."""
@@ -136,6 +166,7 @@ class Executor:
         await self._upload_file(session_id)
         await self._index_file(session.project, session.source.name)
         del self._sessions[session_id]
+        await self._delete_thread(session_id)
 
     async def _invoke(self, session_id: str) -> ReviewRequest:
         """Create a fresh LangGraph thread for the current PPTX page or the whole file, run until the interrupt"""
@@ -173,7 +204,7 @@ class Executor:
                 config,
             )
 
-        state = self.graph.get_state(config)
+        state = await self.graph.aget_state(config)
         return self._build_review_request(session_id, state)
 
     def _build_review_request(
@@ -196,7 +227,8 @@ class Executor:
         session = self._sessions[session_id]
         source = session.source
         config = {"configurable": {"thread_id": session_id}}
-        values = self.graph.get_state(config).values
+        state = await self.graph.aget_state(config)
+        values = state.values
 
         chunks = [
             Chunk(

@@ -9,7 +9,7 @@ A browser-based HITL (Human-in-the-Loop) frontend for the DataExtractor API.
 ```bash
 # From the repo root
 mineru-api --host localhost --port 8000
-uvicorn data.app:app --reload --port 8001
+python -m data.main
 ```
 
 ### 2. Open the data frontend
