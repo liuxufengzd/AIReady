@@ -125,9 +125,7 @@ class MineruExtractor:
 
             image_meta = await self.image_extractor.extract(image_file)
             if image_meta.info_loss:
-                image_tag = (
-                    f"<Image\n  id={image_id}\n  content={image_meta.content}\n/>"
-                )
+                image_tag = f"<Image>\n  <Id>{image_id}</Id>\n  <Content>{image_meta.content}</Content>\n</Image>"
                 # move the file to image store
                 image_path = Path(
                     f"store/s3/images/{project}/{source.name}/{image_id}.jpg"

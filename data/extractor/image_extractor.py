@@ -3,7 +3,7 @@ from common.util import read_file
 from data.common.prompts import IMAGE_META_PROMPT
 from langchain_core.messages import HumanMessage, SystemMessage
 from pathlib import Path
-from data.model.image_meta import ImageMeta
+from data.model.matadata import ImageMeta
 from common.logger import get_logger
 
 logger = get_logger(__name__)

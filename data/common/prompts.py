@@ -99,7 +99,7 @@ Transform the chart entirely into a clean Markdown table. Do not truncate data p
 *   **Axes/Legends:** Clearly label columns using the exact names from the chart axes or legend keys.
 *   **Data Representation:** Reconstruct the complete dataset. For values that require estimation (e.g., a bar between grid lines), provide your best precise approximation.
 
-### RULE 2: IF THE IMAGE CONTAINS A DIAGRAM (Flowchart, Architecture, Process, Cycle)
+### RULE 2: IF THE IMAGE CONTAINS A DIAGRAM (Flowchart, Architecture, Process, Cycle, etc.)
 Transform the diagram into valid Mermaid.js flowchart syntax (`graph TD` or `graph LR`). Ensure the layout preserves hierarchical groupings and logical flows perfectly.
 *   **Syntax Rules:** Use clean Markdown code blocks fenced with ` ```mermaid ` and ` ``` `.
 *   **Subgraphs:** If the diagram visually groups elements into distinct sections or containers, map them out using `subgraph "Name"` and `end`.

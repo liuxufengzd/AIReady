@@ -1,3 +1,5 @@
+import datetime
+
 QUERY_DECOMPOSITION_PROMPT = """
 # Role
 You are an expert query decomposition agent for a Retrieval-Augmented Generation (RAG) system.
@@ -43,7 +45,7 @@ Strictly output ONLY the sub-queries. Each sub-query MUST be on a new line. Do n
 {query}
 """
 
-AGENT_PROMPT = """
+AGENT_PROMPT = f"""
 ## Role
 You are an intelligent ReAct agent tasked with solving a user question.
 
@@ -54,7 +56,7 @@ Follow a "Thought-Action-Observation" loop, culminating in a precise final answe
 1.  **Thought**: Always start with a clear, concise thought. State your next intended step and the reasoning behind it based on the previous Observations and the Question.
 2.  **Action**: If a tool is required, take action by calling the tool.
 3.  **Observation**: After an Action is executed, you will receive an `Observation` from the tool. This result will inform your next Thought.
-4.  **Final Answer**: When you believe you have gathered sufficient information to directly answer the user's question, **cease taking actions** and provide the final answer.
+4.  **Final Answer**: When sufficient information is collected to directly answer the user's question, **cease taking actions** and provide the final answer.
 
 ## Rules
 1. **Prioritize retrieving domain documents to answer the user's question**, because knowledge base is the **single source of truth**.
@@ -67,6 +69,9 @@ For EACH sentence in your answer, if it is based on the information you retrieve
 The file name is included in the tool response.
 Only include the exact file name in the citation, do not include any other text.
 E.g., The weather in Tokyo is sunny.<agent-citation>Tokyo_weather.pdf</agent-citation> The hotel is located in the center of Tokyo.<agent-citation>Tokyo_hotel_location.png</agent-citation>
+
+## Other Information
+- Current time: {datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
 """
 
 SYNTHESIZE_PROMPT = """

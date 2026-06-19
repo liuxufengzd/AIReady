@@ -4,7 +4,7 @@ import re
 import uuid
 from urllib.parse import quote
 from langchain_core.messages import HumanMessage, ToolMessage
-from supervisor.search_context import SearchContext
+from supervisor.model.search_context import SearchContext
 from supervisor.agent import get_agent
 from common.util import get_llm
 from supervisor.prompts import (
@@ -17,6 +17,7 @@ from supervisor.common import const
 from common.logger import get_logger
 from langfuse.langchain import CallbackHandler
 from langgraph.errors import GraphRecursionError
+
 
 logger = get_logger(__name__)
 
@@ -75,6 +76,7 @@ class SupervisorService:
                 result = await agent.ainvoke(
                     {
                         "messages": [HumanMessage(content=f"Query: {q}")],
+                        "filename_to_chunk_ids": {},
                     },
                     context=SearchContext(project=project, filters=filters),
                     config=config,

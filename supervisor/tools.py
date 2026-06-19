@@ -1,6 +1,6 @@
 import os
 from langchain.tools import ToolRuntime, tool
-from supervisor.search_context import SearchContext
+from supervisor.model.search_context import SearchContext
 from grpc_protos.search.search_client import SearchClient
 from data.model.matadata import Metadata
 from pathlib import Path
@@ -15,7 +15,7 @@ logger = get_logger(__name__)
 @tool
 async def search_domain_knowledge(
     query: str, runtime: ToolRuntime[SearchContext]
-) -> Command:
+) -> Command | str:
     """Searches for documents in the domain knowledge base that are related to the given query.
     Returns a list of content blocks containing the related domain knowledge, or an error message.
 
@@ -36,9 +36,22 @@ async def search_domain_knowledge(
             return "No relevant documents found for the query."
 
         content_blocks: list[dict[str, str]] = []
+        current_filename_to_chunk_ids: dict[str, list[str]] = runtime.state.get(
+            "filename_to_chunk_ids", {}
+        )
         for file_name, chunk_ids in file_name_to_chunk_ids.items():
             for chunk_id in chunk_ids:
                 try:
+                    # Avoid adding the same file chunk multiple times to the content blocks
+                    if (
+                        file_name in current_filename_to_chunk_ids
+                        and chunk_id in current_filename_to_chunk_ids[file_name]
+                    ):
+                        continue
+                    else:
+                        current_filename_to_chunk_ids.setdefault(file_name, []).append(
+                            chunk_id
+                        )
                     metadata: Metadata = _get_metadata(context.project, file_name)
                 except Exception as e:
                     logger.warning(f"Error getting metadata for file {file_name}: {e}")
@@ -103,19 +116,49 @@ async def search_domain_knowledge(
                         content=content_blocks, tool_call_id=runtime.tool_call_id
                     )
                 ],
+                "filename_to_chunk_ids": current_filename_to_chunk_ids,
             }
         )
     except Exception as e:
+        return f"Error searching domain documents: {str(e)}"
+
+
+@tool
+async def search_for_image(
+    file_name: str, image_id: str, runtime: ToolRuntime[SearchContext]
+) -> Command | str:
+    """Searches for the original image content in the image store. Use this tool if and only if the original image content is required.
+    Returns a content block containing the original image content, or an error message.
+
+    Args:
+        file_name: The name of the file containing the image.
+        image_id: The ID of the image to search for, which is recorded in the <Image><Id>{image_id}</Id></Image> tag.
+    """
+    try:
+        context = runtime.context
+        logger.info(
+            f"Searching for image with project: {context.project}, file name: {file_name}, image ID: {image_id}"
+        )
+        image_path = Path(
+            f"store/s3/images/{context.project}/{file_name}/{image_id}.jpg"
+        )
+        if not image_path.exists():
+            logger.warning(
+                f"Image with ID {image_id} not found. File name: {file_name}, image ID: {image_id}"
+            )
+            return f"Image with ID {image_id} not found. Check the file name and image ID again."
         return Command(
             update={
                 "messages": [
                     ToolMessage(
-                        content=f"Error searching domain documents: {str(e)}",
+                        content=[read_file(image_path)],
                         tool_call_id=runtime.tool_call_id,
                     )
                 ],
             }
         )
+    except Exception as e:
+        return f"Error searching for image: {str(e)}"
 
 
 def _get_metadata(project: str, file_name: str) -> Metadata:
