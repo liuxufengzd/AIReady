@@ -113,9 +113,13 @@ class SupervisorService:
             return "Invalid question. Please check your question and try again."
 
         # Process the sub-questions in parallel using asyncio.gather
+        sub_thread_ids: list[str] = []
+
         async def process_subquestion(q: str) -> tuple[str, str]:
+            sub_thread_id = f"{thread_id}-{uuid.uuid4().hex}"
+            sub_thread_ids.append(sub_thread_id)
             config = {
-                "configurable": {"thread_id": thread_id},
+                "configurable": {"thread_id": sub_thread_id},
                 "recursion_limit": const.MAX_ITERATIONS,  # limit the number of calling nodes in the agent graph
                 "callbacks": [callback_handler],
             }
@@ -162,6 +166,12 @@ class SupervisorService:
         # Use asyncio.gather for parallel processing instead of ThreadPoolExecutor
         process_results = await asyncio.gather(
             *[process_subquestion(q) for q in result.sub_questions]
+        )
+
+        # Clean up sub-question threads
+        await asyncio.gather(
+            *[self._delete_thread(tid) for tid in sub_thread_ids],
+            return_exceptions=True,
         )
 
         # Synthesize the answer
