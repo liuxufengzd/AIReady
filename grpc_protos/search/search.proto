@@ -10,13 +10,22 @@ enum StatusCode {
   INTERNAL = 3;
 }
 
-// Search service providing document retrieval and storage capabilities
+// Search service providing document retrieval, storage, and conversation history management
 service SearchService {
   // Query documents from the index using hybrid search (semantic + keyword)
   rpc Query(QueryRequest) returns (QueryResponse);
 
   // Store documents in the index
   rpc Store(StoreRequest) returns (StoreResponse);
+
+  // Store conversation topic summaries in the vector DB
+  rpc StoreConvTopics(StoreConvTopicsRequest) returns (StoreConvTopicsResponse);
+
+  // Semantic search over stored conversation topic summaries for a thread
+  rpc QueryConvTopics(QueryConvTopicsRequest) returns (QueryConvTopicsResponse);
+
+  // Delete all conversation topic summaries for a thread
+  rpc DeleteConvTopics(DeleteConvTopicsRequest) returns (DeleteConvTopicsResponse);
 }
 
 // Document message representing a single document with content, file URL, and metadata
@@ -56,4 +65,47 @@ message StoreRequest {
 message StoreResponse {
   StatusCode status = 1;
   string error = 2;
+}
+
+// ---------------------------------------------------------------------------
+// Conversation history
+// ---------------------------------------------------------------------------
+
+// A single extracted conversation topic summary
+message ConvTopic {
+  string content   = 1;  // Full topic text: "Topic: <name>\n<detail>"
+  string thread_id = 2;
+}
+
+// Store conversation topic summaries
+message StoreConvTopicsRequest {
+  repeated ConvTopic topics = 1;
+}
+
+message StoreConvTopicsResponse {
+  StatusCode status = 1;
+  string error      = 2;
+}
+
+// Semantic search over stored conversation topic summaries
+message QueryConvTopicsRequest {
+  string thread_id = 1;
+  string query     = 2;
+  int32  top_k     = 3;
+}
+
+message QueryConvTopicsResponse {
+  StatusCode      status   = 1;
+  repeated string contents = 2;  // Matched topic texts, ranked by relevance
+  string error             = 3;
+}
+
+// Delete all topic summaries for a thread
+message DeleteConvTopicsRequest {
+  string thread_id = 1;
+}
+
+message DeleteConvTopicsResponse {
+  StatusCode status = 1;
+  string error      = 2;
 }

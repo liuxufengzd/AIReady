@@ -5,7 +5,7 @@ import warnings
 
 from grpc_protos.search import search_pb2 as search__pb2
 
-GRPC_GENERATED_VERSION = '1.80.0'
+GRPC_GENERATED_VERSION = '1.76.0'
 GRPC_VERSION = grpc.__version__
 _version_not_supported = False
 
@@ -26,7 +26,7 @@ if _version_not_supported:
 
 
 class SearchServiceStub(object):
-    """Search service providing document retrieval and storage capabilities
+    """Search service providing document retrieval, storage, and conversation history management
     """
 
     def __init__(self, channel):
@@ -45,10 +45,25 @@ class SearchServiceStub(object):
                 request_serializer=search__pb2.StoreRequest.SerializeToString,
                 response_deserializer=search__pb2.StoreResponse.FromString,
                 _registered_method=True)
+        self.StoreConvTopics = channel.unary_unary(
+                '/search.SearchService/StoreConvTopics',
+                request_serializer=search__pb2.StoreConvTopicsRequest.SerializeToString,
+                response_deserializer=search__pb2.StoreConvTopicsResponse.FromString,
+                _registered_method=True)
+        self.QueryConvTopics = channel.unary_unary(
+                '/search.SearchService/QueryConvTopics',
+                request_serializer=search__pb2.QueryConvTopicsRequest.SerializeToString,
+                response_deserializer=search__pb2.QueryConvTopicsResponse.FromString,
+                _registered_method=True)
+        self.DeleteConvTopics = channel.unary_unary(
+                '/search.SearchService/DeleteConvTopics',
+                request_serializer=search__pb2.DeleteConvTopicsRequest.SerializeToString,
+                response_deserializer=search__pb2.DeleteConvTopicsResponse.FromString,
+                _registered_method=True)
 
 
 class SearchServiceServicer(object):
-    """Search service providing document retrieval and storage capabilities
+    """Search service providing document retrieval, storage, and conversation history management
     """
 
     def Query(self, request, context):
@@ -60,6 +75,27 @@ class SearchServiceServicer(object):
 
     def Store(self, request, context):
         """Store documents in the index
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def StoreConvTopics(self, request, context):
+        """Store conversation topic summaries in the vector DB
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def QueryConvTopics(self, request, context):
+        """Semantic search over stored conversation topic summaries for a thread
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def DeleteConvTopics(self, request, context):
+        """Delete all conversation topic summaries for a thread
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -78,6 +114,21 @@ def add_SearchServiceServicer_to_server(servicer, server):
                     request_deserializer=search__pb2.StoreRequest.FromString,
                     response_serializer=search__pb2.StoreResponse.SerializeToString,
             ),
+            'StoreConvTopics': grpc.unary_unary_rpc_method_handler(
+                    servicer.StoreConvTopics,
+                    request_deserializer=search__pb2.StoreConvTopicsRequest.FromString,
+                    response_serializer=search__pb2.StoreConvTopicsResponse.SerializeToString,
+            ),
+            'QueryConvTopics': grpc.unary_unary_rpc_method_handler(
+                    servicer.QueryConvTopics,
+                    request_deserializer=search__pb2.QueryConvTopicsRequest.FromString,
+                    response_serializer=search__pb2.QueryConvTopicsResponse.SerializeToString,
+            ),
+            'DeleteConvTopics': grpc.unary_unary_rpc_method_handler(
+                    servicer.DeleteConvTopics,
+                    request_deserializer=search__pb2.DeleteConvTopicsRequest.FromString,
+                    response_serializer=search__pb2.DeleteConvTopicsResponse.SerializeToString,
+            ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
             'search.SearchService', rpc_method_handlers)
@@ -87,7 +138,7 @@ def add_SearchServiceServicer_to_server(servicer, server):
 
  # This class is part of an EXPERIMENTAL API.
 class SearchService(object):
-    """Search service providing document retrieval and storage capabilities
+    """Search service providing document retrieval, storage, and conversation history management
     """
 
     @staticmethod
@@ -134,6 +185,87 @@ class SearchService(object):
             '/search.SearchService/Store',
             search__pb2.StoreRequest.SerializeToString,
             search__pb2.StoreResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def StoreConvTopics(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/search.SearchService/StoreConvTopics',
+            search__pb2.StoreConvTopicsRequest.SerializeToString,
+            search__pb2.StoreConvTopicsResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def QueryConvTopics(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/search.SearchService/QueryConvTopics',
+            search__pb2.QueryConvTopicsRequest.SerializeToString,
+            search__pb2.QueryConvTopicsResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def DeleteConvTopics(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/search.SearchService/DeleteConvTopics',
+            search__pb2.DeleteConvTopicsRequest.SerializeToString,
+            search__pb2.DeleteConvTopicsResponse.FromString,
             options,
             channel_credentials,
             insecure,

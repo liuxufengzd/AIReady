@@ -132,7 +132,7 @@ async def search_for_image(
 
     Args:
         file_name: The name of the file containing the image.
-        image_id: The ID of the image to search for, which is recorded in the <Image><Id>{image_id}</Id></Image> tag.
+        image_id: The ID of the image to search for, which is recorded in the <Image><ID>{image_id}</ID></Image> tag.
     """
     try:
         context = runtime.context
@@ -159,6 +159,40 @@ async def search_for_image(
         )
     except Exception as e:
         return f"Error searching for image: {str(e)}"
+
+
+@tool
+async def search_conversation_history(
+    query: str, runtime: ToolRuntime[SearchContext]
+) -> str:
+    """Search historical conversation summaries for information relevant to the query.
+    Use this tool when the current question references topics from earlier conversation
+    turns that are no longer present in the recent conversation history.  The tool returns the top-3
+    semantically matching topic summaries extracted from the archived history.
+
+    Args:
+        query: Natural-language description of the historical information needed.
+    """
+    logger.info(f"Searching conversation history for query: {query}")
+    context = runtime.context
+    if not context.thread_id:
+        return "No conversation history is available for this session."
+
+    try:
+        async with SearchClient(target=os.environ.get("SEARCH_API_URL")) as client:
+            contents = await client.query_topics(
+                thread_id=context.thread_id,
+                query=query,
+                top_k=3,
+            )
+    except Exception as exc:
+        logger.warning("Failed to search conversation history: %s", exc)
+        return "Failed to retrieve conversation history."
+
+    if not contents:
+        return "No relevant historical conversation information found."
+
+    return "\n\n---\n\n".join(contents)
 
 
 def _get_metadata(project: str, file_name: str) -> Metadata:

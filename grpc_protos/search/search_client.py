@@ -31,38 +31,68 @@ logger = get_logger(__name__)
 
 _DEFAULT_TARGET = "localhost:50051"
 
+_CHANNEL_OPTIONS = [
+    ("grpc.max_send_message_length", 50 * 1024 * 1024),   # 50 MB
+    ("grpc.max_receive_message_length", 50 * 1024 * 1024), # 50 MB
+    # Round-robin load balancing for headless K8s services
+    ("grpc.lb_policy_name", "round_robin"),
+    # Enables automatic retry for failed RPCs (e.g., transient network errors).
+    ("grpc.enable_retries", 1),
+    # Exponential backoff when connection fails
+    ("grpc.initial_reconnect_backoff_ms", 100),
+    ("grpc.max_reconnect_backoff_ms", 10000),
+    # Keepalive to detect dead connections at the application level
+    ("grpc.keepalive_time_ms", 30000),
+    ("grpc.keepalive_timeout_ms", 10000),
+    ("grpc.keepalive_permit_without_calls", 1),
+]
+
 
 class SearchClient:
     """
     gRPC client for the Search microservice.
 
-    Usage:
-        # Local development
-        async with SearchClient("hotel") as client:
-            docs = await client.query("What is the check-in time?")
+    Covers two areas of the SearchService API:
 
-        # Kubernetes with headless service (client-side load balancing)
+    1. **Domain knowledge** – hybrid document retrieval and file indexing.
+       These methods require ``project`` to be set on the client.
+
+    2. **Conversation history** – store, query, and delete topic summaries
+       extracted from old conversation turns.  These methods accept
+       ``thread_id`` as method arguments.
+
+    Usage — domain knowledge:
+        async with SearchClient(project="hotel") as client:
+            chunks = await client.query("What is the check-in time?")
+            await client.store("hotel_policies.pdf")
+
+    Usage — conversation history:
+        async with SearchClient() as client:
+            await client.store_topics(thread_id, ["Topic: X\\nDetail..."])
+            results = await client.query_topics(thread_id, "what about X")
+            await client.delete_topics(thread_id)
+
+    Kubernetes with headless service (client-side load balancing):
         async with SearchClient(
-            "hotel",
+            project="hotel",
             target="dns:///search-svc.dataagent.svc.cluster.local:50051"
         ) as client:
-            docs = await client.query("What is the check-in time?")
+            ...
     """
 
     def __init__(
         self,
-        project: str,
+        project: str = "",
         target: str | None = None,
-    ):
+    ) -> None:
         """
-        Initialize the search client.
-
         Args:
-            project: The project name used to scope the index
-            target: gRPC target address. Supports formats:
-                    - "host:port" (direct connection)
-                    - "dns:///service.namespace.svc.cluster.local:port" (K8s DNS with client-side LB)
-                    Default: SEARCH_API_URL env var or "localhost:50051"
+            project: Project name used to scope domain-knowledge operations.
+                     Leave empty when only using conversation-history methods.
+            target:  gRPC target address.  Supports:
+                     - "host:port"  (direct)
+                     - "dns:///svc.ns.svc.cluster.local:port"  (K8s headless)
+                     Defaults to SEARCH_API_URL env var or "localhost:50051".
         """
         self.project = project
         self.target = target or os.environ.get("SEARCH_API_URL", _DEFAULT_TARGET)
@@ -76,30 +106,124 @@ class SearchClient:
     async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
         await self._close()
 
+    # ------------------------------------------------------------------
+    # Domain knowledge
+    # ------------------------------------------------------------------
+
+    async def query(
+        self,
+        query: str,
+        *,
+        filters: dict[str, Any] | None = None,
+    ) -> dict[str, list[str]]:
+        """Query file chunks from the search service using hybrid search.
+
+        Args:
+            query:   Search query text.
+            filters: Optional key/value filters to scope the search.
+
+        Returns:
+            Dictionary mapping file names to matching chunk IDs.
+        """
+        stub = self._ensure_connected()
+        request = search_pb2.QueryRequest(
+            project=self.project,
+            query=query,
+            filters={k: str(v) for k, v in (filters or {}).items()},
+        )
+        response: search_pb2.QueryResponse = await stub.Query(request)
+        if response.status != search_pb2.OK:
+            raise RuntimeError(f"[{self.project}] Query failed: {response.error}")
+        return {fc.file_name: list(fc.chunk_ids) for fc in response.results}
+
+    async def store(self, source_file_name: str) -> None:
+        """Index a file by name.
+
+        Args:
+            source_file_name: Name of the source file to index.
+        """
+        stub = self._ensure_connected()
+        request = search_pb2.StoreRequest(
+            project=self.project,
+            source_file_name=source_file_name,
+        )
+        response: search_pb2.StoreResponse = await stub.Store(request)
+        if response.status == search_pb2.NOT_FOUND:
+            raise FileNotFoundError(f"[{self.project}] Store failed: {response.error}")
+        if response.status != search_pb2.OK:
+            raise RuntimeError(f"[{self.project}] Store failed: {response.error}")
+
+    # ------------------------------------------------------------------
+    # Conversation history
+    # ------------------------------------------------------------------
+
+    async def store_topics(self, thread_id: str, contents: list[str]) -> None:
+        """Persist conversation topic summaries in the vector DB.
+
+        Args:
+            thread_id: Thread the topics belong to (globally unique).
+            contents:  Topic texts, e.g. ``["Topic: X\\nDetail..."]``.
+        """
+        stub = self._ensure_connected()
+        topics = [
+            search_pb2.ConvTopic(content=c, thread_id=thread_id)
+            for c in contents
+        ]
+        response: search_pb2.StoreConvTopicsResponse = await stub.StoreConvTopics(
+            search_pb2.StoreConvTopicsRequest(topics=topics)
+        )
+        if response.status != search_pb2.OK:
+            raise RuntimeError(f"StoreConvTopics failed: {response.error}")
+
+    async def query_topics(
+        self, thread_id: str, query: str, top_k: int = 3
+    ) -> list[str]:
+        """Semantic search over stored topic summaries for a thread.
+
+        Args:
+            thread_id: Thread to scope the search to.
+            query:     Natural-language search query.
+            top_k:     Maximum number of results (default 3).
+
+        Returns:
+            Matched topic texts ranked by relevance (may be empty).
+        """
+        stub = self._ensure_connected()
+        response: search_pb2.QueryConvTopicsResponse = await stub.QueryConvTopics(
+            search_pb2.QueryConvTopicsRequest(
+                thread_id=thread_id, query=query, top_k=top_k
+            )
+        )
+        if response.status != search_pb2.OK:
+            raise RuntimeError(f"QueryConvTopics failed: {response.error}")
+        return list(response.contents)
+
+    async def delete_topics(self, thread_id: str) -> None:
+        """Remove all stored topic summaries for a thread.
+
+        Args:
+            thread_id: Thread whose topics should be deleted.
+        """
+        stub = self._ensure_connected()
+        response: search_pb2.DeleteConvTopicsResponse = await stub.DeleteConvTopics(
+            search_pb2.DeleteConvTopicsRequest(thread_id=thread_id)
+        )
+        if response.status != search_pb2.OK:
+            raise RuntimeError(f"DeleteConvTopics failed: {response.error}")
+
+    # ------------------------------------------------------------------
+    # Internal
+    # ------------------------------------------------------------------
+
     async def _connect(self) -> None:
-        """Establish connection to the gRPC server with client-side load balancing."""
         if self._channel is None:
-            options = [
-                ("grpc.max_send_message_length", 50 * 1024 * 1024),  # 50MB
-                ("grpc.max_receive_message_length", 50 * 1024 * 1024),  # 50MB
-                # Round-robin load balancing for headless K8s services
-                ("grpc.lb_policy_name", "round_robin"),
-                # Enables automatic retry for failed RPCs (e.g., transient network errors).
-                ("grpc.enable_retries", 1),
-                # Exponential backoff when connection fails
-                ("grpc.initial_reconnect_backoff_ms", 100),
-                ("grpc.max_reconnect_backoff_ms", 10000),
-                # Keepalive to detect dead connections at the application level
-                ("grpc.keepalive_time_ms", 30000),
-                ("grpc.keepalive_timeout_ms", 10000),
-                ("grpc.keepalive_permit_without_calls", 1),
-            ]
-            self._channel = grpc.aio.insecure_channel(self.target, options=options)
+            self._channel = grpc.aio.insecure_channel(
+                self.target, options=_CHANNEL_OPTIONS
+            )
             self._stub = search_pb2_grpc.SearchServiceStub(self._channel)
-            logger.info(f"Connected to Search service at {self.target}")
+            logger.info("Connected to Search service at %s", self.target)
 
     async def _close(self) -> None:
-        """Close the gRPC channel."""
         if self._channel is not None:
             await self._channel.close()
             self._channel = None
@@ -109,58 +233,6 @@ class SearchClient:
     def _ensure_connected(self) -> search_pb2_grpc.SearchServiceStub:
         if self._stub is None:
             raise RuntimeError(
-                "Client not connected. Use async context manager or call _connect() first."
+                "SearchClient not connected. Use it as an async context manager."
             )
         return self._stub
-
-    async def query(
-        self,
-        query: str,
-        *,
-        filters: dict[str, Any] | None = None,
-    ) -> dict[str, list[str]]:
-        """
-        Query file chunks from the search service using hybrid search.
-
-        Args:
-            query: Search query text
-            filters: Optional key/value filters to scope the search
-
-        Returns:
-            Dictionary of file names to matching chunk IDs
-        """
-        stub = self._ensure_connected()
-
-        request = search_pb2.QueryRequest(
-            project=self.project,
-            query=query,
-            filters={k: str(v) for k, v in (filters or {}).items()},
-        )
-
-        response: search_pb2.QueryResponse = await stub.Query(request)
-
-        if response.status != search_pb2.OK:
-            raise RuntimeError(f"[{self.project}] Query failed: {response.error}")
-
-        return {fc.file_name: list(fc.chunk_ids) for fc in response.results}
-
-    async def store(self, source_file_name: str) -> None:
-        """
-        Index file by its name.
-
-        Args:
-            source_file_name: Name of the source file to index
-        """
-        stub = self._ensure_connected()
-
-        request = search_pb2.StoreRequest(
-            project=self.project,
-            source_file_name=source_file_name,
-        )
-
-        response: search_pb2.StoreResponse = await stub.Store(request)
-
-        if response.status == search_pb2.NOT_FOUND:
-            raise FileNotFoundError(f"[{self.project}] Store failed: {response.error}")
-        if response.status != search_pb2.OK:
-            raise RuntimeError(f"[{self.project}] Store failed: {response.error}")

@@ -24,7 +24,7 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0csearch.proto\x12\x06search\"\x90\x01\n\x08\x44ocument\x12\x0f\n\x07\x63ontent\x18\x01 \x01(\t\x12\x10\n\x08\x66ile_url\x18\x02 \x01(\t\x12\x30\n\x08metadata\x18\x03 \x03(\x0b\x32\x1e.search.Document.MetadataEntry\x1a/\n\rMetadataEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\t:\x02\x38\x01\"\x92\x01\n\x0cQueryRequest\x12\x0f\n\x07project\x18\x01 \x01(\t\x12\r\n\x05query\x18\x02 \x01(\t\x12\x32\n\x07\x66ilters\x18\x03 \x03(\x0b\x32!.search.QueryRequest.FiltersEntry\x1a.\n\x0c\x46iltersEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\t:\x02\x38\x01\"2\n\nFileChunks\x12\x11\n\tfile_name\x18\x01 \x01(\t\x12\x11\n\tchunk_ids\x18\x02 \x03(\t\"g\n\rQueryResponse\x12\"\n\x06status\x18\x01 \x01(\x0e\x32\x12.search.StatusCode\x12#\n\x07results\x18\x02 \x03(\x0b\x32\x12.search.FileChunks\x12\r\n\x05\x65rror\x18\x03 \x01(\t\"9\n\x0cStoreRequest\x12\x0f\n\x07project\x18\x01 \x01(\t\x12\x18\n\x10source_file_name\x18\x02 \x01(\t\"B\n\rStoreResponse\x12\"\n\x06status\x18\x01 \x01(\x0e\x32\x12.search.StatusCode\x12\r\n\x05\x65rror\x18\x02 \x01(\t*G\n\nStatusCode\x12\x06\n\x02OK\x10\x00\x12\r\n\tNOT_FOUND\x10\x01\x12\x14\n\x10INVALID_ARGUMENT\x10\x02\x12\x0c\n\x08INTERNAL\x10\x03\x32{\n\rSearchService\x12\x34\n\x05Query\x12\x14.search.QueryRequest\x1a\x15.search.QueryResponse\x12\x34\n\x05Store\x12\x14.search.StoreRequest\x1a\x15.search.StoreResponseb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0csearch.proto\x12\x06search\"\x90\x01\n\x08\x44ocument\x12\x0f\n\x07\x63ontent\x18\x01 \x01(\t\x12\x10\n\x08\x66ile_url\x18\x02 \x01(\t\x12\x30\n\x08metadata\x18\x03 \x03(\x0b\x32\x1e.search.Document.MetadataEntry\x1a/\n\rMetadataEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\t:\x02\x38\x01\"\x92\x01\n\x0cQueryRequest\x12\x0f\n\x07project\x18\x01 \x01(\t\x12\r\n\x05query\x18\x02 \x01(\t\x12\x32\n\x07\x66ilters\x18\x03 \x03(\x0b\x32!.search.QueryRequest.FiltersEntry\x1a.\n\x0c\x46iltersEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\t:\x02\x38\x01\"2\n\nFileChunks\x12\x11\n\tfile_name\x18\x01 \x01(\t\x12\x11\n\tchunk_ids\x18\x02 \x03(\t\"g\n\rQueryResponse\x12\"\n\x06status\x18\x01 \x01(\x0e\x32\x12.search.StatusCode\x12#\n\x07results\x18\x02 \x03(\x0b\x32\x12.search.FileChunks\x12\r\n\x05\x65rror\x18\x03 \x01(\t\"9\n\x0cStoreRequest\x12\x0f\n\x07project\x18\x01 \x01(\t\x12\x18\n\x10source_file_name\x18\x02 \x01(\t\"B\n\rStoreResponse\x12\"\n\x06status\x18\x01 \x01(\x0e\x32\x12.search.StatusCode\x12\r\n\x05\x65rror\x18\x02 \x01(\t\"/\n\tConvTopic\x12\x0f\n\x07\x63ontent\x18\x01 \x01(\t\x12\x11\n\tthread_id\x18\x02 \x01(\t\";\n\x16StoreConvTopicsRequest\x12!\n\x06topics\x18\x01 \x03(\x0b\x32\x11.search.ConvTopic\"L\n\x17StoreConvTopicsResponse\x12\"\n\x06status\x18\x01 \x01(\x0e\x32\x12.search.StatusCode\x12\r\n\x05\x65rror\x18\x02 \x01(\t\"I\n\x16QueryConvTopicsRequest\x12\x11\n\tthread_id\x18\x01 \x01(\t\x12\r\n\x05query\x18\x02 \x01(\t\x12\r\n\x05top_k\x18\x03 \x01(\x05\"^\n\x17QueryConvTopicsResponse\x12\"\n\x06status\x18\x01 \x01(\x0e\x32\x12.search.StatusCode\x12\x10\n\x08\x63ontents\x18\x02 \x03(\t\x12\r\n\x05\x65rror\x18\x03 \x01(\t\",\n\x17\x44\x65leteConvTopicsRequest\x12\x11\n\tthread_id\x18\x01 \x01(\t\"M\n\x18\x44\x65leteConvTopicsResponse\x12\"\n\x06status\x18\x01 \x01(\x0e\x32\x12.search.StatusCode\x12\r\n\x05\x65rror\x18\x02 \x01(\t*G\n\nStatusCode\x12\x06\n\x02OK\x10\x00\x12\r\n\tNOT_FOUND\x10\x01\x12\x14\n\x10INVALID_ARGUMENT\x10\x02\x12\x0c\n\x08INTERNAL\x10\x03\x32\xfa\x02\n\rSearchService\x12\x34\n\x05Query\x12\x14.search.QueryRequest\x1a\x15.search.QueryResponse\x12\x34\n\x05Store\x12\x14.search.StoreRequest\x1a\x15.search.StoreResponse\x12R\n\x0fStoreConvTopics\x12\x1e.search.StoreConvTopicsRequest\x1a\x1f.search.StoreConvTopicsResponse\x12R\n\x0fQueryConvTopics\x12\x1e.search.QueryConvTopicsRequest\x1a\x1f.search.QueryConvTopicsResponse\x12U\n\x10\x44\x65leteConvTopics\x12\x1f.search.DeleteConvTopicsRequest\x1a .search.DeleteConvTopicsResponseb\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
@@ -35,8 +35,8 @@ if not _descriptor._USE_C_DESCRIPTORS:
   _globals['_DOCUMENT_METADATAENTRY']._serialized_options = b'8\001'
   _globals['_QUERYREQUEST_FILTERSENTRY']._loaded_options = None
   _globals['_QUERYREQUEST_FILTERSENTRY']._serialized_options = b'8\001'
-  _globals['_STATUSCODE']._serialized_start=604
-  _globals['_STATUSCODE']._serialized_end=675
+  _globals['_STATUSCODE']._serialized_start=1088
+  _globals['_STATUSCODE']._serialized_end=1159
   _globals['_DOCUMENT']._serialized_start=25
   _globals['_DOCUMENT']._serialized_end=169
   _globals['_DOCUMENT_METADATAENTRY']._serialized_start=122
@@ -53,6 +53,20 @@ if not _descriptor._USE_C_DESCRIPTORS:
   _globals['_STOREREQUEST']._serialized_end=534
   _globals['_STORERESPONSE']._serialized_start=536
   _globals['_STORERESPONSE']._serialized_end=602
-  _globals['_SEARCHSERVICE']._serialized_start=677
-  _globals['_SEARCHSERVICE']._serialized_end=800
+  _globals['_CONVTOPIC']._serialized_start=604
+  _globals['_CONVTOPIC']._serialized_end=651
+  _globals['_STORECONVTOPICSREQUEST']._serialized_start=653
+  _globals['_STORECONVTOPICSREQUEST']._serialized_end=712
+  _globals['_STORECONVTOPICSRESPONSE']._serialized_start=714
+  _globals['_STORECONVTOPICSRESPONSE']._serialized_end=790
+  _globals['_QUERYCONVTOPICSREQUEST']._serialized_start=792
+  _globals['_QUERYCONVTOPICSREQUEST']._serialized_end=865
+  _globals['_QUERYCONVTOPICSRESPONSE']._serialized_start=867
+  _globals['_QUERYCONVTOPICSRESPONSE']._serialized_end=961
+  _globals['_DELETECONVTOPICSREQUEST']._serialized_start=963
+  _globals['_DELETECONVTOPICSREQUEST']._serialized_end=1007
+  _globals['_DELETECONVTOPICSRESPONSE']._serialized_start=1009
+  _globals['_DELETECONVTOPICSRESPONSE']._serialized_end=1086
+  _globals['_SEARCHSERVICE']._serialized_start=1162
+  _globals['_SEARCHSERVICE']._serialized_end=1540
 # @@protoc_insertion_point(module_scope)

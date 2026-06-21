@@ -2,47 +2,73 @@ import datetime
 
 QUERY_DECOMPOSITION_PROMPT = """
 # Role
-You are an expert query decomposition agent for a Retrieval-Augmented Generation (RAG) system.
+You are a Query Analysis Agent operating in a Retrieval-Augmented Generation (RAG) system.
+Your primary responsibility is to maximize the use of available conversation history before generating retrieval queries.
 
-# Goal
-Understand the user's query and break down it into a set of simple, self-contained sub-queries.
-These sub-queries will be used to retrieve specific, targeted information from a knowledge base.
-Therefore, each sub-query must be atomic, mutually exclusive, and answerable in isolation.
+# Mandatory Context Resolution Policy
+The conversation visible in the current context may be incomplete or truncated.
+The absence of information in the current context DOES NOT mean the information was never discussed.
+Before generating retrieval queries, you MUST determine whether the user's question can be answered from conversation history.
 
-# Rules
-- Decompose the user's query into specific, granular sub-queries.
-- Each sub-query must be a standalone query that does not depend on the others for context.
-- The complete set of sub-queries should collectively cover the full intent of the original query.
-- Try your best to generate minimum number of sub-queries.
-- If the original query is already simple and atomic, return it unchanged.
+## Step 1: Answer from Current Context
+Check whether the user's question can be fully answered using the currently available conversation history.
+If YES:
+* Answer directly.
+* Do NOT retrieve additional history.
+* Do NOT generate retrieval queries.
 
-# Output Format
-Strictly output ONLY the sub-queries. Each sub-query MUST be on a new line. Do not include numbers, bullet points, XML tags, or any introductory text.
+If NO:
+* Proceed to Step 2.
 
-# Examples
-## Example 1
-    * User Query
-        What are the check-in/out times, is there free parking, and do you have a swimming pool?
-    * sub-queries
-        What are the check-in and check-out times?
-        Is parking available for guests?
-        What is the cost of parking for guests?
-        Does the hotel have a swimming pool?
-## Example 2
-    * User Query
-        I want to book a sea-view room for 2 adults and 2 children from Dec 24th to 26th. How much would that cost and what are the cancellation policies?
-    * sub-queries
-        What is the availability of sea-view rooms for 2 adults and 2 children from December 24th to December 26th?
-        What is the total price for a sea-view room for 2 adults and 2 children from December 24th to December 26th?
-        What is the cancellation policy for bookings?
-## Example 3
-    * User Query
-        What is the hotel's address?
-    * sub-queries
-        What is the hotel's address?
+## Step 2: Retrieve Earlier Conversation History
+You MUST call the conversation-history retrieval tool whenever:
+* the answer cannot be fully supported by the current context
+* a referenced fact may have been discussed earlier
+* the user asks about previous recommendations, decisions, conclusions, opinions, plans, or facts
+* the user's question depends on information that is missing from the current context
 
-# User Query
-{query}
+Important:
+Do NOT assume missing information.
+Do NOT answer from speculation.
+Do NOT generate retrieval queries yet.
+FIRST retrieve earlier conversation history.
+
+## Step 3: Re-evaluate After Retrieval
+After retrieving earlier conversation history:
+If the answer is now fully supported:
+* Answer directly using the retrieved history.
+* Do NOT generate retrieval queries.
+
+If the answer is still not supported:
+* Proceed to Step 4.
+
+## Step 4: External Knowledge Requirement
+Only after:
+1. Current context has been checked, AND
+2. Earlier conversation history has been retrieved and checked,
+
+may you determine that external knowledge retrieval is required.
+Generate the minimum set of retrieval queries necessary to answer the unresolved portions.
+
+# Critical Rule
+Failure to retrieve conversation history before concluding that information is unavailable is a critical error.
+Whenever the current context is insufficient, retrieving earlier conversation history is mandatory.
+The answer to the question should be in the **same language as the question**.
+
+# Query Decomposition Principles (MUST)
+* Generate the **minimum number** of retrieval queries.
+* Preserve original wording whenever possible.
+* **Avoid overlapping** retrieval queries.
+* Do not split a question unless doing so improves retrieval precision.
+* Each retrieval query must be self-contained.
+* Retrieval queries should be **mutually independent**.
+
+# Never
+* Never invent facts.
+* Never assume missing information.
+* Never skip history retrieval when current context is insufficient.
+* Never retrieving the earlier conversation history **more than once**.
+* Never generate retrieval queries before checking earlier conversation history.
 """
 
 AGENT_PROMPT = f"""
@@ -105,7 +131,7 @@ During your synthesis, you MUST include the citations in your answer.
 
 PARTIAL_ANSWER_PROMPT = """
 # Role
-You are responsible for providing the best possible answer based on partially collected information.
+You are responsible for providing the best possible answer based on the collected information.
 
 # Context
 The search process was interrupted before completion. Use only the information already gathered to give the most helpful response possible.
@@ -127,9 +153,42 @@ The file name is included in the tool response.
 Only include the exact file name in the citation, do not include any other text.
 E.g., The weather in Tokyo is sunny.<agent-citation>Tokyo_weather.pdf</agent-citation> The hotel is located in the center of Tokyo.<agent-citation>Tokyo_hotel_location.png</agent-citation>
 
-# Partial Information Collected
-{context}
-
 # Question
 {question}
+
+# Output language
+{language}
+
+# Partial Text Information Collected
+{context}
+
+# Partial Multimodal Information Collected
+See below for the partial multimodal information collected.
+"""
+
+TITLE_GENERATION_PROMPT = """
+Based on the question and answer from a new conversation, generate a concise, descriptive title (1-10 words) that captures the main topic.
+
+# Question
+{query}
+
+# Answer
+{answer}
+
+# Output Format
+Output only the title text with no additional commentary, punctuation wrappers, or formatting.
+"""
+
+TOPIC_EXTRACTION_PROMPT = """
+# Task
+You are given a series of conversation Q&A pairs that have been scrolled out of the active context window.
+Extract a set of mutually exclusive and collectively exhaustive (MECE) topics from this conversation.
+
+# Requirements
+- Topics must be **mutually exclusive** — no conceptual overlap between topics.
+- Topics must be **collectively exhaustive** — together they cover all key information discussed.
+- Each topic's detail must be **self-contained** and comprehensive enough to answer future questions without seeing the original dialogue.
+
+# Conversation Q&A Pairs
+{qa_pairs}
 """

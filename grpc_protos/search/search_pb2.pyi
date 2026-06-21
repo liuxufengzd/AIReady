@@ -85,3 +85,59 @@ class StoreResponse(_message.Message):
     status: StatusCode
     error: str
     def __init__(self, status: _Optional[_Union[StatusCode, str]] = ..., error: _Optional[str] = ...) -> None: ...
+
+class ConvTopic(_message.Message):
+    __slots__ = ("content", "thread_id")
+    CONTENT_FIELD_NUMBER: _ClassVar[int]
+    THREAD_ID_FIELD_NUMBER: _ClassVar[int]
+    content: str
+    thread_id: str
+    def __init__(self, content: _Optional[str] = ..., thread_id: _Optional[str] = ...) -> None: ...
+
+class StoreConvTopicsRequest(_message.Message):
+    __slots__ = ("topics",)
+    TOPICS_FIELD_NUMBER: _ClassVar[int]
+    topics: _containers.RepeatedCompositeFieldContainer[ConvTopic]
+    def __init__(self, topics: _Optional[_Iterable[_Union[ConvTopic, _Mapping]]] = ...) -> None: ...
+
+class StoreConvTopicsResponse(_message.Message):
+    __slots__ = ("status", "error")
+    STATUS_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    status: StatusCode
+    error: str
+    def __init__(self, status: _Optional[_Union[StatusCode, str]] = ..., error: _Optional[str] = ...) -> None: ...
+
+class QueryConvTopicsRequest(_message.Message):
+    __slots__ = ("thread_id", "query", "top_k")
+    THREAD_ID_FIELD_NUMBER: _ClassVar[int]
+    QUERY_FIELD_NUMBER: _ClassVar[int]
+    TOP_K_FIELD_NUMBER: _ClassVar[int]
+    thread_id: str
+    query: str
+    top_k: int
+    def __init__(self, thread_id: _Optional[str] = ..., query: _Optional[str] = ..., top_k: _Optional[int] = ...) -> None: ...
+
+class QueryConvTopicsResponse(_message.Message):
+    __slots__ = ("status", "contents", "error")
+    STATUS_FIELD_NUMBER: _ClassVar[int]
+    CONTENTS_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    status: StatusCode
+    contents: _containers.RepeatedScalarFieldContainer[str]
+    error: str
+    def __init__(self, status: _Optional[_Union[StatusCode, str]] = ..., contents: _Optional[_Iterable[str]] = ..., error: _Optional[str] = ...) -> None: ...
+
+class DeleteConvTopicsRequest(_message.Message):
+    __slots__ = ("thread_id",)
+    THREAD_ID_FIELD_NUMBER: _ClassVar[int]
+    thread_id: str
+    def __init__(self, thread_id: _Optional[str] = ...) -> None: ...
+
+class DeleteConvTopicsResponse(_message.Message):
+    __slots__ = ("status", "error")
+    STATUS_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    status: StatusCode
+    error: str
+    def __init__(self, status: _Optional[_Union[StatusCode, str]] = ..., error: _Optional[str] = ...) -> None: ...
