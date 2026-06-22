@@ -29,6 +29,17 @@
     }
     .fade-up { animation: fadeUp 0.3s ease both; }
 
+    @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
+    .stream-cursor {
+      display: inline-block;
+      width: 2px; height: 1em;
+      background: #64748b;
+      border-radius: 1px;
+      vertical-align: text-bottom;
+      margin-left: 1px;
+      animation: blink 0.9s step-start infinite;
+    }
+
     /* Markdown inside assistant bubbles */
     .md h1 { font-size: 1.25em; font-weight: 700; margin: 0.75em 0 0.35em; }
     .md h2 { font-size: 1.1em; font-weight: 600; margin: 0.7em 0 0.3em; border-bottom: 1px solid #e2e8f0; padding-bottom: 0.2em; }
@@ -101,11 +112,72 @@
     function api(base) {
       const b = base.replace(/\/+$/, "");
       return {
-        query:         (body)     => apiFetch(`${b}/query`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }),
         listThreads:   (project)  => apiFetch(`${b}/threads?project=${encodeURIComponent(project)}`),
         getThread:     (id)       => apiFetch(`${b}/threads/${encodeURIComponent(id)}`),
         deleteThread:  (id)       => apiFetch(`${b}/threads/${encodeURIComponent(id)}`, { method: "DELETE" }),
       };
+    }
+
+    /**
+     * Async generator that POSTs to /query and yields parsed SSE event objects.
+     * Event shapes from the server:
+     *   { type: "thread_id", thread_id: "..." }
+     *   { type: "chunk",     text: "..." }
+     *   { type: "final",     text: "...", title: "..." }
+     *   { type: "error",     message: "..." }
+     */
+    async function* queryStream(base, body, signal) {
+      const b = base.replace(/\/+$/, "");
+      let resp;
+      try {
+        resp = await fetch(`${b}/query`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+          signal,
+        });
+      } catch (e) {
+        if (e.name === "AbortError") return;
+        throw new Error(`Network error: ${e.message}`);
+      }
+      if (!resp.ok) {
+        let detail = "";
+        try {
+          const j = await resp.json();
+          detail = j.detail
+            ? (Array.isArray(j.detail) ? JSON.stringify(j.detail, null, 2) : String(j.detail))
+            : JSON.stringify(j);
+        } catch { detail = await resp.text(); }
+        throw new Error(`[${resp.status}] ${detail}`);
+      }
+
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = "";
+
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          const lines = buf.split("\n");
+          buf = lines.pop();               // keep last (possibly incomplete) line
+          for (const line of lines) {
+            if (!line.startsWith("data: ")) continue;
+            const raw = line.slice(6).trim();
+            if (!raw) continue;
+            try { yield JSON.parse(raw); } catch { /* ignore malformed lines */ }
+          }
+        }
+        // Flush any remaining decoder bytes
+        buf += decoder.decode();
+        if (buf.startsWith("data: ")) {
+          const raw = buf.slice(6).trim();
+          if (raw) { try { yield JSON.parse(raw); } catch {} }
+        }
+      } finally {
+        reader.releaseLock();
+      }
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -335,16 +407,22 @@
     }
 
     function AssistantMessage({ text, isStreaming }) {
+      const hasText = text && text.trim().length > 0;
       return (
         <div className="flex gap-3">
           <div className="w-7 h-7 bg-emerald-600 rounded-lg flex-shrink-0 grid place-items-center text-white text-xs font-bold mt-0.5 shadow-sm">
             AI
           </div>
           <div className="flex-1 min-w-0 px-4 py-3 bg-white border border-slate-200 rounded-2xl rounded-tl-sm shadow-sm">
-            {isStreaming ? (
+            {isStreaming && !hasText ? (
               <div className="flex items-center gap-2 text-slate-400 text-sm">
                 <Spinner size={16} color="#94a3b8" />
                 <span>Thinking…</span>
+              </div>
+            ) : hasText ? (
+              <div className="relative">
+                <MdPreview text={text} />
+                {isStreaming && <span className="stream-cursor" />}
               </div>
             ) : (
               <MdPreview text={text} />
@@ -426,13 +504,13 @@
     // Chat View
     // ═══════════════════════════════════════════════════════════════════════════
 
-    function ChatView({ thread, pendingQuery, onSend, loading, project }) {
+    function ChatView({ thread, pendingQuery, streamingText, onSend, loading, project }) {
       const bottomRef = useRef(null);
 
-      // Scroll to bottom when messages change or loading starts
+      // Scroll to bottom when messages change, loading starts, or new tokens arrive
       useEffect(() => {
         bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-      }, [thread?.body?.length, pendingQuery]);
+      }, [thread?.body?.length, pendingQuery, streamingText]);
 
       const isEmpty = !thread || thread.body.length === 0;
       const noThread = !thread && !pendingQuery;
@@ -484,7 +562,7 @@
               {pendingQuery && (
                 <div className="space-y-3 fade-up">
                   <UserMessage text={pendingQuery} />
-                  <AssistantMessage isStreaming />
+                  <AssistantMessage text={streamingText} isStreaming={loading} />
                 </div>
               )}
 
@@ -510,8 +588,10 @@
       const [currentThread, setCurrentThread]  = useState(null);  // full Thread object
       const [currentId,     setCurrentId]      = useState(null);
       const [pendingQuery,  setPendingQuery]   = useState(null);
+      const [streamingText, setStreamingText]  = useState("");
       const [loading,       setLoading]        = useState(false);
       const [error,         setError]          = useState("");
+      const abortRef = useRef(null);
 
       const client = useMemo(() => api(apiBase), [apiBase]);
 
@@ -544,9 +624,12 @@
 
       // ── New thread ──
       const startNewThread = () => {
+        abortRef.current?.abort();
         setCurrentId(null);
         setCurrentThread(null);
         setPendingQuery(null);
+        setStreamingText("");
+        setLoading(false);
       };
 
       // ── Delete thread ──
@@ -562,43 +645,64 @@
 
       // ── Send query ──
       const sendQuery = useCallback(async (queryText) => {
+        // Cancel any in-flight request
+        abortRef.current?.abort();
+        const controller = new AbortController();
+        abortRef.current = controller;
+
         setError("");
         setLoading(true);
         setPendingQuery(queryText);
+        setStreamingText("");
 
         // If no thread selected yet, create a temporary placeholder
-        let tempThread = currentThread;
-        if (!tempThread) {
-          tempThread = { thread_id: null, project, title: null, body: [] };
-          setCurrentThread(tempThread);
+        if (!currentThread) {
+          setCurrentThread({ thread_id: null, project, title: null, body: [] });
         }
 
+        // Track the thread ID resolved from the first SSE event (may differ from currentId
+        // when starting a new thread) using a local variable so we don't depend on stale state.
+        let resolvedThreadId = currentId;
+
         try {
-          const result = await client.query({
+          for await (const event of queryStream(apiBase, {
             project,
             query: queryText,
             thread_id: currentId || undefined,
-          });
+          }, controller.signal)) {
+            if (event.type === "thread_id") {
+              resolvedThreadId = event.thread_id;
+              setCurrentId(event.thread_id);
 
-          const newPair = { query: queryText, answer: result.answer, tokens: 0 };
+            } else if (event.type === "chunk") {
+              setStreamingText((prev) => prev + event.text);
 
-          setCurrentThread((prev) => {
-            const body = prev ? [...prev.body, newPair] : [newPair];
-            return {
-              thread_id: result.thread_id,
-              project,
-              title: result.title || prev?.title,
-              body,
-            };
-          });
-          setCurrentId(result.thread_id);
-          setPendingQuery(null);
+            } else if (event.type === "final") {
+              const newPair = { query: queryText, answer: event.text, tokens: 0 };
+              setCurrentThread((prev) => {
+                const body = prev ? [...prev.body, newPair] : [newPair];
+                return {
+                  thread_id: resolvedThreadId,
+                  project,
+                  title: event.title || prev?.title,
+                  body,
+                };
+              });
+              setCurrentId(resolvedThreadId);
+              setPendingQuery(null);
+              setStreamingText("");
+              // Refresh sidebar thread list
+              await loadThreads(project);
 
-          // Refresh thread list to pick up new/updated thread
-          await loadThreads(project);
+            } else if (event.type === "error") {
+              throw new Error(event.message);
+            }
+          }
         } catch (e) {
+          if (e.name === "AbortError") return;
           setError(`Query failed: ${e.message}`);
           setPendingQuery(null);
+          setStreamingText("");
           // Roll back placeholder if thread was new
           if (!currentId) {
             setCurrentThread(null);
@@ -606,16 +710,19 @@
         } finally {
           setLoading(false);
         }
-      }, [client, project, currentId, currentThread, loadThreads]);
+      }, [apiBase, project, currentId, currentThread, loadThreads]);
 
       // ── Project start ──
       const handleStart = (proj, base) => {
+        abortRef.current?.abort();
         setApiBase(base);
         setProject(proj);
         setThreads([]);
         setCurrentThread(null);
         setCurrentId(null);
         setPendingQuery(null);
+        setStreamingText("");
+        setLoading(false);
       };
 
       // Load threads when project is set (and apiBase is ready)
@@ -655,6 +762,7 @@
             <ChatView
               thread={currentThread}
               pendingQuery={pendingQuery}
+              streamingText={streamingText}
               onSend={sendQuery}
               loading={loading}
               project={project}

@@ -5,6 +5,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -58,45 +59,43 @@ class QueryRequest(BaseModel):
     filters: dict[str, str] | None = None
 
 
-class QueryResponse(BaseModel):
-    answer: str
-    thread_id: str
-    title: str | None = None
-
-
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
 
 
-@app.post("/query", response_model=QueryResponse)
-async def query(request: QueryRequest) -> QueryResponse:
+@app.post("/query")
+async def query(request: QueryRequest) -> StreamingResponse:
     """
-    Answer a user question within an optional conversation thread.
+    Stream an answer token-by-token using Server-Sent Events (SSE).
 
-    - ``project``   - project identifier used to scope knowledge searches
-    - ``query``     - the user's natural-language question
-    - ``thread_id`` - (optional) existing thread ID; omit to start a new thread
-    - ``filters``   - optional key/value metadata filters for knowledge search
+    Connect with ``Content-Type: text/event-stream``.  Each ``data:`` line
+    carries a JSON object with a ``type`` field:
 
-    The response includes ``thread_id`` so the client can continue the same
-    conversation in subsequent requests, and ``title`` (populated on the first
-    turn of a new thread).
+    - ``thread_id`` - sent immediately; contains the conversation thread ID.
+    - ``chunk``     - one or more LLM token chunks (``text`` field).
+    - ``final``     - sent after all chunks; contains the citation-refined
+                      ``text`` and the thread ``title``.
+    - ``error``     - sent on failure; contains a ``message`` field.
     """
-    try:
-        result = await service.query(
+
+    async def event_generator():
+        async for event in service.query(
             project=request.project,
             query=request.query,
             thread_id=request.thread_id,
             filters=request.filters,
-        )
-        return QueryResponse(
-            answer=result.answer,
-            thread_id=result.thread_id,
-            title=result.title,
-        )
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        ):
+            yield event
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @app.get("/threads", response_model=list[ThreadSummary])

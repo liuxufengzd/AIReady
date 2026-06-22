@@ -1,7 +1,8 @@
 import asyncio
+import json
 import re
 import uuid
-from dataclasses import dataclass
+from collections.abc import AsyncIterator
 from urllib.parse import quote
 from langchain_core.messages import HumanMessage
 from langfuse.langchain import CallbackHandler
@@ -23,13 +24,6 @@ from supervisor.thread_store import ThreadStore, ThreadSummary
 logger = get_logger(__name__)
 
 
-@dataclass
-class QueryResult:
-    answer: str
-    thread_id: str
-    title: str | None
-
-
 class SupervisorService:
     def __init__(self, files_base_url: str = "http://localhost:8002/files") -> None:
         self.files_base_url = files_base_url
@@ -40,7 +34,7 @@ class SupervisorService:
         # Keep strong references to background tasks so they are not GC'd before completion.
         self._background_tasks: set[asyncio.Task] = set()
 
-    async def ensure_initialized(self) -> None:
+    async def _ensure_initialized(self) -> None:
         """Lazily initialise all resources on first use."""
         if self.agent is None:
             self.llm = get_llm()
@@ -67,14 +61,25 @@ class SupervisorService:
         query: str,
         thread_id: str | None = None,
         filters: dict[str, str] | None = None,
-    ) -> QueryResult:
-        await self.ensure_initialized()
+    ) -> AsyncIterator[str]:
+        """
+        Stream an answer token-by-token using Server-Sent Events (SSE).
+
+        Event types:
+          {"type": "thread_id", "thread_id": "..."}   - sent immediately after setup
+          {"type": "chunk",     "text": "..."}         - one or more LLM token chunks
+          {"type": "final",     "text": "...", "title": "..."}   - refined answer + title
+          {"type": "error",     "message": "..."}      - on failure
+        """
+        await self._ensure_initialized()
         callback_handler = CallbackHandler()
 
         if thread_id is None:
             thread_id = str(uuid.uuid4())
 
         thread = await self.thread_store.get_or_create(thread_id, project)
+
+        yield f"data: {json.dumps({'type': 'thread_id', 'thread_id': thread_id})}\n\n"
 
         # Select recent Q&A pairs that fit within the prompt token budget.
         recent_pairs = self._select_recent_pairs(thread)
@@ -83,28 +88,44 @@ class SupervisorService:
         # LangGraph uses its own ephemeral thread IDs (checkpointer rows are
         # deleted immediately after each request).
         lg_thread_id = str(uuid.uuid4())
+
+        accumulated: list[str] = []
+        stream_error: Exception | None = None
+        raw_gen = self._run_query(
+            project=project,
+            query=query,
+            filters=filters,
+            lg_thread_id=lg_thread_id,
+            callback_handler=callback_handler,
+            history_text=history_text,
+            conv_thread_id=thread_id,
+        )
         try:
-            answer = await self._run_query(
-                project=project,
-                query=query,
-                filters=filters,
-                lg_thread_id=lg_thread_id,
-                callback_handler=callback_handler,
-                history_text=history_text,
-                conv_thread_id=thread_id,
-            )
+            async for chunk in raw_gen:
+                accumulated.append(chunk)
+                yield f"data: {json.dumps({'type': 'chunk', 'text': chunk})}\n\n"
+        except Exception as exc:
+            logger.error("Error during streaming query", exc_info=True)
+            stream_error = exc
         finally:
+            await raw_gen.aclose()
             await self._delete_lg_thread(lg_thread_id)
 
-        # Persist the new Q&A pair.
-        qa_tokens = self.llm.get_num_tokens(query + answer)
-        new_qa = QAPair(query=query, answer=answer, tokens=qa_tokens)
+        if stream_error is not None:
+            yield f"data: {json.dumps({'type': 'error', 'message': str(stream_error)})}\n\n"
+            return
+
+        full_answer = "".join(accumulated)
+        refined_answer = self._refine_citations(full_answer, project)
+
+        qa_tokens = self.llm.get_num_tokens(query + full_answer)
+        new_qa = QAPair(query=query, answer=refined_answer, tokens=qa_tokens)
         await self.thread_store.append_qa(thread_id, new_qa)
 
         # Generate the thread title on the very first turn.
         title = thread.title
         if title is None:
-            title = await self._generate_title(query, answer, callback_handler)
+            title = await self._generate_title(query, refined_answer, callback_handler)
             await self.thread_store.update_title(thread_id, title)
 
         # Trigger async topic extraction when history has grown beyond the threshold.
@@ -117,20 +138,7 @@ class SupervisorService:
                 )
             )
 
-        return QueryResult(answer=answer, thread_id=thread_id, title=title)
-
-    async def list_threads(self, project: str, limit: int = 100) -> list[ThreadSummary]:
-        await self.ensure_initialized()
-        return await self.thread_store.list_threads(project, limit=limit)
-
-    async def get_thread(self, thread_id: str) -> Thread | None:
-        await self.ensure_initialized()
-        return await self.thread_store.get(thread_id)
-
-    async def delete_thread(self, thread_id: str) -> None:
-        await self.ensure_initialized()
-        await self.thread_store.delete_thread(thread_id)
-        await self.history_extractor.delete_thread_topics(thread_id)
+        yield f"data: {json.dumps({'type': 'final', 'text': refined_answer, 'title': title})}\n\n"
 
     async def _run_query(
         self,
@@ -141,8 +149,9 @@ class SupervisorService:
         callback_handler,
         history_text: str,
         conv_thread_id: str,
-    ) -> str:
-        # 1. Decompose the query into atomic sub-questions and try to answer them from the conversation history.
+    ) -> AsyncIterator[str]:
+        """Async generator yielding raw text chunks (without citation refinement)."""
+        # Phase 1: query analysis.
         result: QueryAnalysisResult | None = (
             await self.agent.get_query_analysis_agent().ainvoke(
                 {
@@ -167,15 +176,41 @@ class SupervisorService:
         )["structured_response"]
 
         if result is None:
-            return "Invalid question. Please check your question and try again."
+            yield "Invalid question. Please check your question and try again."
+            return
 
-        # Return the answer directly if no retrieval questions are needed.
         if result.retrieval_questions is None:
-            return "\n\n".join(a for _, a in result.answered_from_context)
+            yield "\n\n".join(a for _, a in result.answered_from_context)
+            return
 
-        # 2. Process sub-questions in parallel via the ReAct agent.
+        # Phase 2: Resolve sub-questions in parallel.
         sub_lg_thread_ids: list[str] = []
-        process_results: list[tuple[str, str]] = []
+
+        # When there is exactly one retrieval question and no context-answered
+        # questions, the agent's output IS the final answer – stream it directly
+        # instead of collecting and yielding it all at once.
+        is_single_retrieval = (
+            len(result.retrieval_questions) == 1 and not result.answered_from_context
+        )
+        if is_single_retrieval:
+            async for chunk in self._process_subquestion_stream(
+                user_query=query,
+                q=result.retrieval_questions[0],
+                language=result.language,
+                lg_thread_id=lg_thread_id,
+                sub_lg_thread_ids=sub_lg_thread_ids,
+                callback_handler=callback_handler,
+                project=project,
+                conv_thread_id=conv_thread_id,
+                filters=filters,
+            ):
+                yield chunk
+            await asyncio.gather(
+                *[self._delete_lg_thread(tid) for tid in sub_lg_thread_ids],
+                return_exceptions=True,
+            )
+            return
+
         process_results: list[tuple[str, str]] = await asyncio.gather(
             *[
                 self._process_subquestion(
@@ -198,26 +233,21 @@ class SupervisorService:
             return_exceptions=True,
         )
 
-        # 3. Synthesize the answer, making the answer more precise and informative.
+        # Phase 3: Synthesize the answer, making the answer more precise and informative.
         process_results.extend(result.answered_from_context or [])
-        if len(process_results) == 1:
-            final_answer = process_results[0][1]
-        else:
-            context = "\n\n---\n\n".join(
-                [f"Question: {q}\n\nAnswer: {a}" for q, a in process_results]
-            )
-            synthesized_result = await self.llm.ainvoke(
-                SYNTHESIZE_PROMPT.format(
-                    context=context, query=query, language=result.language
-                ),
-                config={
-                    "configurable": {"thread_id": lg_thread_id},
-                    "callbacks": [callback_handler],
-                },
-            )
-            final_answer = synthesized_result.text
-
-        return self._refine_citations(final_answer, project)
+        context = "\n\n---\n\n".join(
+            [f"Question: {q}\n\nAnswer: {a}" for q, a in process_results]
+        )
+        async for chunk in self.llm.astream(
+            SYNTHESIZE_PROMPT.format(
+                context=context, query=query, language=result.language
+            ),
+            config={
+                "configurable": {"thread_id": lg_thread_id},
+                "callbacks": [callback_handler],
+            },
+        ):
+            yield chunk.text
 
     async def _process_subquestion(
         self,
@@ -258,6 +288,78 @@ class SupervisorService:
         except Exception:
             logger.error("Error processing sub-question: %s", q, exc_info=True)
             return (q, "Error processing this sub-question. Please try again.")
+
+    async def _process_subquestion_stream(
+        self,
+        user_query: str,
+        q: str,
+        language: str,
+        lg_thread_id: str,
+        sub_lg_thread_ids: list[str],
+        callback_handler,
+        project: str,
+        conv_thread_id: str,
+        filters: dict[str, str] | None,
+    ) -> AsyncIterator[str]:
+        sub_id = f"{lg_thread_id}-{uuid.uuid4().hex}"
+        sub_lg_thread_ids.append(sub_id)
+        config = {
+            "configurable": {"thread_id": sub_id},
+            "recursion_limit": const.MAX_ITERATIONS,
+            "callbacks": [callback_handler],
+        }
+        try:
+            async for chunk in self.agent.get_rag_agent().astream(
+                {
+                    "messages": [
+                        HumanMessage(
+                            content=[
+                                (
+                                    "You are given a user query and a question. "
+                                    "Retrieving related information from the knowledge base to answer the question. "
+                                    f"Refine your final answer based on the user query in {language} language."
+                                ),
+                                f"User query: {user_query}",
+                                f"Question: {q}",
+                            ]
+                        )
+                    ],
+                    "filename_to_chunk_ids": {},
+                },
+                context=SearchContext(
+                    project=project,
+                    thread_id=conv_thread_id,
+                    filters=filters,
+                ),
+                config=config,
+                stream_mode="messages",
+                version="v2",
+            ):
+                if chunk["type"] == "messages":
+                    token, metadata = chunk["data"]
+                    if metadata["langgraph_node"] != "model":
+                        continue
+                    content_blocks = token.content_blocks
+                    for content_block in content_blocks:
+                        if content_block["type"] == "text":
+                            yield content_block["text"]
+
+        except Exception:
+            logger.error("Error streaming sub-question: %s", q, exc_info=True)
+            yield "Error processing this sub-question. Please try again."
+
+    async def list_threads(self, project: str, limit: int = 100) -> list[ThreadSummary]:
+        await self._ensure_initialized()
+        return await self.thread_store.list_threads(project, limit=limit)
+
+    async def get_thread(self, thread_id: str) -> Thread | None:
+        await self._ensure_initialized()
+        return await self.thread_store.get(thread_id)
+
+    async def delete_thread(self, thread_id: str) -> None:
+        await self._ensure_initialized()
+        await self.thread_store.delete_thread(thread_id)
+        await self.history_extractor.delete_thread_topics(thread_id)
 
     @staticmethod
     def _select_recent_pairs(thread: Thread) -> list[QAPair]:
