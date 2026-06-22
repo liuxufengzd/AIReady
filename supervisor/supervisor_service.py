@@ -1,24 +1,21 @@
 import asyncio
 import re
 import uuid
-from langchain.agents import create_agent
 from dataclasses import dataclass
 from urllib.parse import quote
-from supervisor.tools import search_conversation_history
 from langchain_core.messages import HumanMessage
 from langfuse.langchain import CallbackHandler
-from pydantic import BaseModel, Field
 
 from common.logger import get_logger
 from common.util import get_llm
-from supervisor.agent import create_agent_with_pool
+from supervisor.agent import Agent
 from supervisor.common import const
 from supervisor.history_extractor import HistoryExtractor
 from supervisor.model.search_context import SearchContext
+from supervisor.model.query_analysis import QueryAnalysisResult
 from supervisor.model.thread import QAPair, Thread
 from supervisor.prompts import (
     SYNTHESIZE_PROMPT,
-    QUERY_DECOMPOSITION_PROMPT,
     TITLE_GENERATION_PROMPT,
 )
 from supervisor.thread_store import ThreadStore, ThreadSummary
@@ -33,25 +30,11 @@ class QueryResult:
     title: str | None
 
 
-class QuestionAnalysisResult(BaseModel):
-    language: str = Field(description="The language of the original question")
-    answered_from_context: list[tuple[str, str]] | None = Field(
-        default=None,
-        description="The list of questions that can be answered from the context. Each item is a tuple of two strings: the question and its answer",
-    )
-    retrieval_questions: list[str] | None = Field(
-        default=None,
-        description="The list of questions that require external knowledge retrieval",
-    )
-
-
 class SupervisorService:
     def __init__(self, files_base_url: str = "http://localhost:8002/files") -> None:
         self.files_base_url = files_base_url
-        self.agent = None
-        self.pool = None
+        self.agent: Agent | None = None
         self.llm = None
-        self.checkpointer = None
         self.thread_store: ThreadStore | None = None
         self.history_extractor: HistoryExtractor | None = None
         # Keep strong references to background tasks so they are not GC'd before completion.
@@ -61,10 +44,9 @@ class SupervisorService:
         """Lazily initialise all resources on first use."""
         if self.agent is None:
             self.llm = get_llm()
-            self.agent, self.pool, self.checkpointer = await create_agent_with_pool(
-                self.llm
-            )
-            self.thread_store = ThreadStore(self.pool)
+            self.agent = Agent(self.llm)
+            await self.agent.initialize()
+            self.thread_store = ThreadStore(self.agent.get_pool())
             await self.thread_store.setup()
             self.history_extractor = HistoryExtractor(self.llm)
 
@@ -73,11 +55,9 @@ class SupervisorService:
         # Wait for in-flight background tasks before closing the pool.
         if self._background_tasks:
             await asyncio.gather(*self._background_tasks, return_exceptions=True)
-        if self.pool is not None:
-            await self.pool.close()
-            self.pool = None
+        if self.agent is not None:
+            await self.agent.close()
             self.agent = None
-            self.checkpointer = None
             self.thread_store = None
             self.history_extractor = None
 
@@ -163,15 +143,8 @@ class SupervisorService:
         conv_thread_id: str,
     ) -> str:
         # 1. Decompose the query into atomic sub-questions and try to answer them from the conversation history.
-        query_decomposition_agent = create_agent(
-            self.llm,
-            [search_conversation_history],
-            system_prompt=QUERY_DECOMPOSITION_PROMPT,
-            checkpointer=self.checkpointer,
-            response_format=QuestionAnalysisResult,
-        )
-        result: QuestionAnalysisResult | None = (
-            await query_decomposition_agent.ainvoke(
+        result: QueryAnalysisResult | None = (
+            await self.agent.get_query_analysis_agent().ainvoke(
                 {
                     "messages": [
                         HumanMessage(
@@ -265,7 +238,7 @@ class SupervisorService:
             "callbacks": [callback_handler],
         }
         try:
-            res = await self.agent.ainvoke(
+            res = await self.agent.get_rag_agent().ainvoke(
                 {
                     "messages": [
                         HumanMessage(
@@ -358,10 +331,10 @@ class SupervisorService:
             )
 
     async def _delete_lg_thread(self, thread_id: str) -> None:
-        if self.checkpointer is None:
+        if self.agent is None:
             return
         try:
-            await self.checkpointer.adelete_thread(thread_id)
+            await self.agent.get_checkpointer().adelete_thread(thread_id)
         except Exception:
             logger.warning(
                 "Failed to delete LangGraph checkpoints for thread %s",
