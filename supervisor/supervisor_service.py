@@ -5,8 +5,7 @@ from langchain.agents import create_agent
 from dataclasses import dataclass
 from urllib.parse import quote
 from supervisor.tools import search_conversation_history
-from langchain_core.messages import HumanMessage, ToolMessage
-from langgraph.errors import GraphRecursionError
+from langchain_core.messages import HumanMessage
 from langfuse.langchain import CallbackHandler
 from pydantic import BaseModel, Field
 
@@ -18,7 +17,6 @@ from supervisor.history_extractor import HistoryExtractor
 from supervisor.model.search_context import SearchContext
 from supervisor.model.thread import QAPair, Thread
 from supervisor.prompts import (
-    PARTIAL_ANSWER_PROMPT,
     SYNTHESIZE_PROMPT,
     QUERY_DECOMPOSITION_PROMPT,
     TITLE_GENERATION_PROMPT,
@@ -284,53 +282,9 @@ class SupervisorService:
                 config=config,
             )
             return (q, res["messages"][-1].text)
-        except GraphRecursionError:
-            logger.warning("Sub-question exceeded recursion limit: %s", q)
-            try:
-                state = await self.agent.aget_state(config)
-                all_messages = state.values.get("messages", [])
-                text_parts: list[str] = []
-                multimodal_blocks: list[dict] = []
-                for msg in all_messages:
-                    if not isinstance(msg, ToolMessage) or not msg.content:
-                        continue
-                    blocks = (
-                        msg.content
-                        if isinstance(msg.content, list)
-                        else [{"type": "text", "text": str(msg.content)}]
-                    )
-                    for block in blocks:
-                        if block.get("type") == "text":
-                            text_parts.append(block["text"])
-                        else:
-                            multimodal_blocks.append(block)
-                if text_parts or multimodal_blocks:
-                    text_context = (
-                        "\n\n".join(text_parts)
-                        if text_parts
-                        else "(See attached files below)"
-                    )
-                    prompt_text = PARTIAL_ANSWER_PROMPT.format(
-                        question=q, language=language, context=text_context
-                    )
-                    human_content: list[dict] = [{"type": "text", "text": prompt_text}]
-                    human_content.extend(multimodal_blocks)
-                    partial = await self.llm.ainvoke(
-                        input=[HumanMessage(content=human_content)],
-                        config={"callbacks": [callback_handler]},
-                    )
-                    return (q, partial.text)
-                return (q, "")  # no tool results collected before recursion limit
-            except Exception:
-                logger.error(
-                    "Failed to build partial answer for sub-question: %s",
-                    q,
-                    exc_info=True,
-                )
-            return (q, "")
         except Exception:
             logger.error("Error processing sub-question: %s", q, exc_info=True)
-            return (q, "")
+            return (q, "Error processing this sub-question. Please try again.")
 
     @staticmethod
     def _select_recent_pairs(thread: Thread) -> list[QAPair]:

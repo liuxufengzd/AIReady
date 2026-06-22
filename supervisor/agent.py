@@ -8,6 +8,7 @@ from supervisor.prompts import AGENT_PROMPT
 from supervisor.model.search_context import SearchContext
 from supervisor.model.search_state import SearchState
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+from langchain.agents.middleware import ToolCallLimitMiddleware
 import psycopg_pool
 from common.util import get_db_uri
 
@@ -33,6 +34,10 @@ async def create_agent_with_pool(llm: BaseChatModel):
         tools,
         system_prompt=AGENT_PROMPT,
         checkpointer=checkpointer,
+        middleware=[
+            ToolCallLimitMiddleware(tool_name="search_for_image", run_limit=3),
+            ToolCallLimitMiddleware(tool_name="search_domain_knowledge", run_limit=3),
+        ],
         context_schema=SearchContext,
         state_schema=SearchState,
     )
