@@ -9,9 +9,7 @@ TOP_K = 5
 # or you want the weight of rank = 1 to be higher, you can try to reduce K (for example, K = 20). Keeping K = 60 is usually a safe starting point.
 RRF_SMOOTHING_CONSTANT = 20
 
-# Elasticsearch (configurable via environment variables)
-ES_HOST = os.environ.get("ES_HOST", "localhost")
-ES_PORT = int(os.environ.get("ES_PORT", "9200"))
+# Elasticsearch
 NUMBER_OF_SHARDS = 1
 NUMBER_OF_REPLICAS = 0
 KEYWORD_TOP_K = 10

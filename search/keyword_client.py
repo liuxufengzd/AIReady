@@ -15,11 +15,11 @@ class KeywordClient:
         container: str,
     ):
         self.index = f"{database.lower().replace(' ', '_')}_{container.lower().replace(' ', '_')}"
-        self.es_host = const.ES_HOST
-        self.es_port = const.ES_PORT
 
         # Initialize async Elasticsearch client
-        self.client = AsyncElasticsearch(f"http://{self.es_host}:{self.es_port}")
+        self.client = AsyncElasticsearch(
+            f"http://{os.environ.get('ES_HOST', 'localhost')}:{os.environ.get('ES_PORT', '9200')}"
+        )
 
     async def store(self, documents: list[Document]) -> None:
         if not documents:

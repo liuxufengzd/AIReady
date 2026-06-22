@@ -35,6 +35,7 @@ Run from the **workspace root** (required so that `grpc_protos` and `common` pac
 
 ```bash
 python -m search.main
+chroma run --path /Workspace/AIReady/store/vectordb --port 9000
 ```
 
 ### Regenerate protobuf stubs

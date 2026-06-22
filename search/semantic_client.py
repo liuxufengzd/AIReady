@@ -1,4 +1,3 @@
-import asyncio
 import os
 from typing import Any
 
@@ -24,9 +23,7 @@ class SemanticClient:
             raise ValueError("Batch size must be less than 5461")
         for i in range(0, len(documents), batch_size):
             batch = documents[i : i + batch_size]
-            # async operations are supported only in ChromaDB Client-Server mode
-            # Use asyncio.to_thread for blocking ChromaDB operations
-            await asyncio.to_thread(self.vectorstore.add_documents, batch)
+            await self.vectorstore.aadd_documents(batch)
         logger.info(f"[Semantic] Successfully stored {len(documents)} documents")
 
     @staticmethod
@@ -56,32 +53,35 @@ class SemanticClient:
                 "filter": self._to_chroma_filter(filters),
             }
         )
-        # Use asyncio.to_thread for blocking retriever operations
-        documents = await asyncio.to_thread(retriever.invoke, query)
+        documents = await retriever.ainvoke(query)
         logger.info(
             f"[Semantic] Retrieved {len(documents)} documents for query: '{query}'"
         )
         return documents
 
     async def delete(self, filters: dict[str, Any]):
-        await asyncio.to_thread(
-            self.vectorstore.delete, where=self._to_chroma_filter(filters)
-        )
+        await self.vectorstore.adelete(where=self._to_chroma_filter(filters))
         logger.info(f"[Semantic] Deleted documents matching filters: {filters}")
 
-    async def delete_container(self):
-        await asyncio.to_thread(self.vectorstore.delete_collection)
-        logger.info("[Semantic] Deleted current collection")
-
     def create_container_if_not_exists(self, database: str, container: str) -> Chroma:
-        collection_name = container.lower().replace(" ", "_")
-        persist_path = os.path.join(const.ROOT_DIR, "vectorstore", database)
+        host = os.environ.get("CHROMA_HOST", "localhost")
+        port = int(os.environ.get("CHROMA_PORT", "9000"))
+        admin = chromadb.AdminClient(
+            chromadb.Settings(
+                chroma_server_host=host,
+                chroma_server_http_port=port,
+                chroma_api_impl="chromadb.api.fastapi.FastAPI",
+            )
+        )
+        try:
+            admin.get_database(database)
+        except Exception:
+            admin.create_database(database)
+            logger.info(f"[Semantic] Created ChromaDB database: {database}")
 
-        # This client is intended for local development and testing. For production, prefer a server-backed Chroma instance.
-        client = chromadb.PersistentClient(path=persist_path)
         return Chroma(
-            client=client,
-            collection_name=collection_name,
+            client=chromadb.HttpClient(host=host, port=port, database=database),
+            collection_name=container.lower().replace(" ", "_"),
             embedding_function=GoogleGenerativeAIEmbeddings(
                 model=const.EMBEDDING_MODEL_NAME
             ),
