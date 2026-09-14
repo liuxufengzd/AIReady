@@ -24,7 +24,7 @@ class LlamaParseExtractor:
             file_id=file_id,
             tier="agentic",
             version="latest",
-            expand=["markdown_full"],
+            expand=["markdown"],
         )
 
         await client.files.delete(file_id=file_id)
