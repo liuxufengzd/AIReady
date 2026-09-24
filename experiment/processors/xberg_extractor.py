@@ -101,8 +101,9 @@ def _build_configuration() -> ExtractionConfig:
     )
 
 
-# Compared to MinerU, precision, completeness, faithfulness are worse but is faster and supports more file types.
+# Compared to MinerU, precision, completeness, faithfulness are worse but is faster(like basic tier of MinerU).
 # For files that contain complex table, layout, formula, or image, MinerU is recommended.
+# Generally, there is no reason to use Xberg but not MinerU.
 class XbergExtractor:
     async def extract(
         self,

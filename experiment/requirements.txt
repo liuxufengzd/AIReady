@@ -1,0 +1,5 @@
+langchain==1.4.1
+langchain-google-genai==4.4.0
+python-dotenv==1.2.3
+mineru[all]==4.0.7
+xberg==1.2.3
