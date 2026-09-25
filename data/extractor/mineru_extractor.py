@@ -1,55 +1,67 @@
 import os
 import re
+import shutil
 import tempfile
 from pathlib import Path
-import httpx
-from mineru.cli import api_client
-import shutil
+
+from docvortex.document.pdf import PDFDocument
+from docvortex.visualization import render_layout_pdf
+from mineru.filetypes import IMAGE_EXTENSIONS
+from mineru.parser import ApiJobStatus, MinerUApiParser, ParseResult, Tier
+from mineru.parser.file_type import guess_suffix_by_path
+from mineru.parser.writer import FileBasedDataWriter
 
 from common.logger import get_logger
-from data.common import const
+from data.common.store_paths import review_artifact_dir
 from data.extractor.image_extractor import ImageExtractor
 
 logger = get_logger(__name__)
 
-
-def _build_form_data(languages: list[str]) -> dict[str, str | list[str]]:
-    return api_client.build_parse_request_form_data(
-        lang_list=languages,
-        backend="hybrid-auto-engine",
-        parse_method="auto",
-        formula_enable=True,
-        table_enable=True,
-        image_analysis=True,
-        server_url=None,
-        start_page_id=0,
-        end_page_id=None,
-        return_md=True,
-        return_images=True,
-        return_middle_json=False,
-        return_model_output=False,
-        return_content_list=False,
-        response_format_zip=True,
-        return_original_file=False,
-    )
+# Image types MinerU may emit in its output (jpg for pdf pages, png for office docs)
+_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".tiff"}
+_MARKDOWN_NAME = "markdown.md"
+_LAYOUT_NAME = "layout.pdf"
+_IMAGES_DIRNAME = "images"
 
 
-def _read_extracted_markdown(extract_dir: Path) -> str:
-    markdown_files = sorted(extract_dir.rglob("*.md"))
-    if not markdown_files:
-        raise ValueError(f"No markdown output found in extracted result: {extract_dir}")
+def _layout_source_pdf(source_path: Path) -> bytes | None:
+    """Return the PDF MinerU laid out, converting images the same way it does."""
+    suffix = guess_suffix_by_path(source_path)
+    file_bytes = source_path.read_bytes()
+    if suffix == "pdf":
+        return file_bytes
+    if suffix in IMAGE_EXTENSIONS:
+        return PDFDocument.from_image(file_bytes).bytes
+    return None
 
-    parts: list[str] = []
-    for md_file in markdown_files:
-        content = md_file.read_text(encoding="utf-8").strip()
-        if not content:
-            continue
-        parts.append(content)
 
-    if not parts:
-        raise ValueError(f"Markdown output files are empty in: {extract_dir}")
+def _prepared_parse_path(file_path: Path, tmp_dir: Path) -> Path:
+    """Copy to a sanitized filename when the stem is unsafe on Windows."""
+    sanitized = file_path.stem.rstrip(" .") or file_path.stem
+    if sanitized == file_path.stem:
+        return file_path
+    target = tmp_dir / f"{sanitized}{file_path.suffix}"
+    shutil.copy2(file_path, target)
+    return target
 
-    return "\n\n".join(parts)
+
+def _write_layout_pdf(source_path: Path, result: ParseResult, dest: Path) -> None:
+    """Draw detected regions onto the source and write them to disk.
+
+    Failures leave the parse usable. The PDF bytes are not retained after the write.
+    """
+    try:
+        source_pdf = _layout_source_pdf(source_path)
+        if source_pdf is None:
+            logger.warning(
+                f"Skipping layout PDF for {source_path.name}: "
+                "source is not a PDF or image"
+            )
+            return
+        dest.write_bytes(render_layout_pdf(source_pdf, result.middle_json.pages))
+    except Exception as exc:
+        logger.warning(f"Skipping layout PDF for {source_path.name}: {exc}")
+        dest.unlink(missing_ok=True)
 
 
 class MineruExtractor:
@@ -61,80 +73,143 @@ class MineruExtractor:
         self,
         project: str,
         source: Path,
-        languages: list[str] = const.DEFAULT_LANGUAGES,
-    ) -> str:
-        logger.info(f"Extracting text with MinerU for file: {source}")
+        *,
+        tier: Tier = "standard",
+    ) -> None:
+        """Parse one document via a self-hosted MinerU V1 API.
+
+        Writes ``markdown.md``, lossy images, and ``layout.pdf`` under
+        ``store/tmp/{project}/{filename}/``.
+
+        ``tier``: selects quality (``flash`` / ``basic`` / ``standard`` / ``advanced``).
+
+        ``basic``: Uses a specialized small-model pipeline throughout. Errors
+        are mechanical (missed recognition, garbled text, layout
+        misalignment). Suited to financial reports and invoices, standard
+        contracts, official documents, and low-compute edge devices —
+        scenarios with extremely low error tolerance and highly fixed formats.
+
+        ``standard``: A specialized small model analyzes layout (introducing
+        some mechanical errors), while a VLM analyzes blocks (logical errors
+        such as hallucinations). Suited to academic papers, complex textbooks,
+        old scanned literature, handwriting, and difficult charts — scenarios
+        with extremely complex typesetting where overall coherence is the goal.
+
+        ``advanced``: Uses a VLM throughout (eliminates mechanical errors, but
+        may introduce more hallucinations). Try this when tier 2 results are
+        unsatisfactory. Currently, advanced is less precise than standard for
+        many cases.
+        """
+        out_dir = review_artifact_dir(project, source.stem)
+        logger.info(
+            f"Extracting text with MinerU for file: {source} "
+            f"(tier={tier}, review_dir={out_dir})"
+        )
         source_path = source.expanduser().resolve()
         if not source_path.is_file():
             raise FileNotFoundError(f"Input file does not exist: {source_path}")
 
-        upload_assets = [
-            api_client.UploadAsset(path=source_path, upload_name=source_path.name)
-        ]
+        parser = MinerUApiParser(
+            api_url=self.api_url,
+            tier=tier,
+            include_images=True,
+        )
 
-        result_zip_path: Path | None = None
+        with tempfile.TemporaryDirectory(prefix="mineru-extract-") as tmp_dir:
+            prepare_dir = Path(tmp_dir)
+            parse_path = _prepared_parse_path(source_path, prepare_dir)
+            logger.info(
+                f"Submitting {source_path.name} to MinerU "
+                f"(tier={tier}, api_url={self.api_url})"
+            )
 
-        async with httpx.AsyncClient(
-            timeout=api_client.build_http_timeout(),
-            follow_redirects=True,
-        ) as http_client:
+            last_status: ApiJobStatus | None = None
+
+            def on_status(status: ApiJobStatus) -> None:
+                nonlocal last_status
+                if status == last_status:
+                    return
+                last_status = status
+                logger.info(f"{source_path.name}: status={status}")
+
             try:
-                server_health = await api_client.fetch_server_health(
-                    http_client,
-                    api_client.normalize_base_url(self.api_url),
+                result = await parser.parse_async(
+                    parse_path,
+                    status_callback=on_status,
                 )
+            except Exception as exc:
+                logger.error(f"Error extracting text with MinerU: {exc}")
+                raise
 
-                submit_response = await api_client.submit_parse_task(
-                    base_url=server_health.base_url,
-                    upload_assets=upload_assets,
-                    form_data=_build_form_data(languages=languages),
-                )
+            if out_dir.exists():
+                shutil.rmtree(out_dir)
+            out_dir.mkdir(parents=True)
+            try:
+                result.save(FileBasedDataWriter(str(out_dir)))
+                _write_layout_pdf(source_path, result, out_dir / _LAYOUT_NAME)
+                await self._parse_images(out_dir)
+                for extra in out_dir.glob("*.json"):
+                    extra.unlink(missing_ok=True)
+            except Exception:
+                shutil.rmtree(out_dir, ignore_errors=True)
+                raise
 
-                await api_client.wait_for_task_result(
-                    client=http_client,
-                    submit_response=submit_response,
-                    task_label=source_path.name,
-                )
-                result_zip_path = await api_client.download_result_zip(
-                    client=http_client,
-                    submit_response=submit_response,
-                    task_label=source_path.name,
-                )
-            except Exception as e:
-                logger.error(f"Error extracting text with MinerU: {e}")
-                raise e
+    async def _parse_images(self, extract_dir: Path) -> None:
+        """Replace image references in the saved markdown and write it back.
 
-        try:
-            with tempfile.TemporaryDirectory(prefix="mineru-extract-") as tmp_dir:
-                extract_dir = Path(tmp_dir)
-                api_client.safe_extract_zip(result_zip_path, extract_dir)
-                return await self._parse_images(project, source, extract_dir)
-        finally:
-            result_zip_path.unlink(missing_ok=True)
+        Images whose content can be fully captured as text are inlined and the
+        image file is removed. Lossy images stay in this review directory
+        (renamed by ID) and are referenced via an <Image> tag.
+        """
+        markdown_file = extract_dir / _MARKDOWN_NAME
+        if not markdown_file.is_file():
+            raise FileNotFoundError(f"Markdown file not found: {markdown_file}")
 
-    async def _parse_images(self, project: str, source: Path, extract_dir: Path) -> str:
-        text = _read_extracted_markdown(extract_dir)
+        text = markdown_file.read_text(encoding="utf-8")
+        if not text.strip():
+            raise ValueError(f"Markdown output is empty: {markdown_file}")
         image_id = 1
-        for image_file in sorted(extract_dir.rglob("*.jpg")):
-            # replace ![...](... file_name ...) with <Image .../> tag
+        image_store_dir = extract_dir / _IMAGES_DIRNAME
+        image_files = sorted(
+            path
+            for path in extract_dir.rglob("*")
+            if path.is_file() and path.suffix.lower() in _IMAGE_SUFFIXES
+        )
+        for image_file in image_files:
+            # replace ![...](... file_name ...) or <img src="... file_name ..."/>
+            # with an <Image .../> tag (tables use the HTML <img> form)
+            escaped_stem = re.escape(image_file.stem)
             pattern = re.compile(
-                r"!\[[^\]]*\]\([^)]*" + re.escape(image_file.stem) + r"[^)]*\)"
+                r"!\[[^\]]*\]\([^)]*" + escaped_stem + r"[^)]*\)"
+                r"|<img\b[^>]*" + escaped_stem + r"[^>]*>"
             )
             if not pattern.search(text):
+                image_file.unlink(missing_ok=True)
                 continue
 
             image_meta = await self.image_extractor.extract(image_file)
             if image_meta.info_loss:
-                image_tag = f"<Image>\n  <ID>{image_id}</ID>\n  <Content>{image_meta.content}</Content>\n</Image>"
-                # move the file to image store
-                image_path = Path(
-                    f"store/s3/images/{project}/{source.name}/{image_id}.jpg"
+                image_store_dir.mkdir(parents=True, exist_ok=True)
+                stored_image_path = (
+                    image_store_dir / f"{image_id}{image_file.suffix.lower()}"
                 )
-                image_path.parent.mkdir(parents=True, exist_ok=True)
-                shutil.move(image_file, image_path)
+                if image_file.resolve() != stored_image_path.resolve():
+                    if stored_image_path.exists():
+                        stored_image_path.unlink()
+                    shutil.move(image_file, stored_image_path)
+                image_tag = (
+                    "<Image>\n"
+                    f"  <ID>{image_id}</ID>\n"
+                    f"  <Content>{image_meta.content}</Content>\n"
+                    "</Image>"
+                )
                 image_id += 1
             else:
                 image_tag = image_meta.content
-            text = pattern.sub(image_tag + "\n", text)
+                image_file.unlink(missing_ok=True)
+            text = pattern.sub(lambda _, tag=image_tag: tag + "\n", text)
 
-        return text
+        # if all images are inlined, remove the image store directory
+        if not any(image_store_dir.rglob("*")):
+            shutil.rmtree(image_store_dir, ignore_errors=True)
+        markdown_file.write_text(text, encoding="utf-8")

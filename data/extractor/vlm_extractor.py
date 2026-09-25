@@ -30,7 +30,7 @@ class VLMExtractor:
         return result.text
 
     async def extract_summary(
-        self, source: Path = None, text: str = None, context: str = ""
+        self, source: Path | None = None, text: str | None = None
     ) -> str:
         logger.info("Extracting summary with VLM")
         if source is not None:
@@ -43,7 +43,7 @@ class VLMExtractor:
             content=[
                 {
                     "type": "text",
-                    "text": PROMPT_FOR_SEMANTIC.format(context=context),
+                    "text": PROMPT_FOR_SEMANTIC,
                 },
                 file_content,
             ]

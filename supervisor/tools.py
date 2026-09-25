@@ -2,6 +2,7 @@ import os
 from langchain.tools import ToolRuntime, tool
 from supervisor.model.search_context import SearchContext
 from grpc_protos.search.search_client import SearchClient
+from data.common.store_paths import raw_retrieval_path
 from data.model.matadata import Metadata
 from pathlib import Path
 from common.logger import get_logger
@@ -10,6 +11,54 @@ from langchain_core.messages import ToolMessage
 from langgraph.types import Command
 
 logger = get_logger(__name__)
+
+
+def _image_id_parts(image_id: str) -> tuple[str | None, str] | None:
+    """Split a tag id into an optional legacy slide number and the file stem."""
+    if image_id.isdigit():
+        return None, image_id
+    slide, separator, stem = image_id.partition("-")
+    if separator and slide.isdigit() and stem.isdigit():
+        return slide, stem
+    return None
+
+
+def _find_stored_image(project: str, file_name: str, image_id: str) -> Path | None:
+    """Find a lossy image kept with an accepted parse, or in the legacy image store."""
+    parts = _image_id_parts(image_id)
+    if parts is None:
+        return None
+    slide, stem = parts
+    roots = (
+        Path(f"store/s3/processed/{project}/{file_name}"),
+        Path(f"store/s3/images/{project}/{file_name}"),
+    )
+    if slide is None:
+        patterns = (
+            f"images/{stem}.*",
+            f"slide_*/images/{stem}.*",
+            f"{stem}.*",
+        )
+    else:
+        patterns = (f"slide_{slide}/images/{stem}.*",)
+    matches: list[Path] = []
+    for root in roots:
+        if not root.exists():
+            continue
+        for pattern in patterns:
+            matches.extend(
+                path
+                for path in root.glob(pattern)
+                if path.is_file() and path.stem == stem
+            )
+    if not matches:
+        return None
+    matches.sort()
+    if len(matches) > 1:
+        logger.warning(
+            f"Multiple images match id {image_id} for {file_name}; using {matches[0]}"
+        )
+    return matches[0]
 
 
 @tool
@@ -64,12 +113,19 @@ async def search_domain_knowledge(
                     continue
                 if chunk.retrieve_raw_file:
                     file_path = Path(file_name)
-                    if file_path.suffix == ".pptx":
-                        path = Path(
+                    legacy_slide = None
+                    if (
+                        file_path.suffix.lower() == ".pptx"
+                        and chunk.page_num is not None
+                    ):
+                        legacy_slide = Path(
                             f"store/s3/processed/{context.project}/{file_path.stem}/slide_{chunk.page_num}.png"
                         )
-                    else:
-                        path = Path(f"store/s3/processed/{context.project}/{file_name}")
+                    path = (
+                        legacy_slide
+                        if legacy_slide is not None and legacy_slide.is_file()
+                        else raw_retrieval_path(context.project, file_name)
+                    )
                     if not path.exists():
                         logger.warning(f"File {path} not found")
                         continue
@@ -139,10 +195,8 @@ async def search_for_image(
         logger.info(
             f"Searching for image with project: {context.project}, file name: {file_name}, image ID: {image_id}"
         )
-        image_path = Path(
-            f"store/s3/images/{context.project}/{file_name}/{image_id}.jpg"
-        )
-        if not image_path.exists():
+        image_path = _find_stored_image(context.project, file_name, image_id)
+        if image_path is None or not image_path.exists():
             logger.warning(
                 f"Image with ID {image_id} not found. File name: {file_name}, image ID: {image_id}"
             )

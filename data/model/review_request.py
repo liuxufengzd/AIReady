@@ -1,3 +1,4 @@
+import base64
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_serializer
@@ -22,18 +23,24 @@ class ReviewRequest(BaseModel):
     permit_reject: bool = Field(
         default=True, description="Whether to permit the human to reject the text."
     )
-    is_second_extraction: bool = Field(
-        default=False,
-        description="Whether this is a review of the second extraction, triggered after the first was rejected.",
-    )
     token_num: int | None = Field(
         default=None,
         description="Token count of the extracted text, shown to help the human decide on chunking.",
+    )
+    layout: bytes | None = Field(
+        default=None,
+        description="MinerU layout PDF bytes, when a layout could be drawn. JSON encodes the file as base64 so the reviewer can render detected regions beside the parsed text.",
     )
     extension: Any = Field(
         default=None,
         description="The extension of the file, extracted by the LLM from the file content.",
     )
+
+    @field_serializer("layout", when_used="json")
+    def serialize_layout(self, layout: bytes | None) -> str | None:
+        if layout is None:
+            return None
+        return base64.b64encode(layout).decode("ascii")
 
     @field_serializer("extension")
     def serialize_extension(self, extension: Any) -> dict[str, Any] | None:

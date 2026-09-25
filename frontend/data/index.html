@@ -61,6 +61,12 @@
 
     /* Input focus ring */
     input:focus, textarea:focus, select:focus { outline: none; }
+
+    /* Content-review panes: tall enough to read a page beside the layout PDF */
+    .review-pane {
+      height: 70vh;
+      min-height: 640px;
+    }
   </style>
 </head>
 <body class="bg-slate-50 min-h-screen antialiased">
@@ -69,6 +75,14 @@
   <script type="text/babel" data-presets="classic-react">
     "use strict";
     const { useState, useMemo, useCallback, useEffect } = React;
+
+    // Injected by the data API from the API_BASE_URL environment variable.
+    const API_BASE = (function () {
+      const injected = "__API_BASE_URL__";
+      if (injected && injected.indexOf("__API_BASE") === -1) return injected.replace(/\/+$/, "");
+      if (window.location.protocol !== "file:") return window.location.origin;
+      return "http://localhost:8001";
+    })();
 
     // ═══════════════════════════════════════════════════════════════════════════
     // API LAYER
@@ -119,22 +133,25 @@
       return text.trim() ? JSON.parse(text) : null;
     }
 
-    function startExtraction(base, project, source, languages, extension) {
-      const params = { project, source, languages };
+    function startExtraction(project, source, extension) {
+      const params = { project, source };
       if (extension) params.extension = extension;
-      return apiPost(base, "/start_extraction", params);
+      return apiPost(API_BASE, "/start_extraction", params);
     }
 
-    function continueExtraction(base, sessionId, approved, text, requireChunking, extension) {
-      const params = { session_id: sessionId };
-      if (approved !== null && approved !== undefined) params.approved = String(approved);
-      if (requireChunking !== null && requireChunking !== undefined) params.require_chunking = String(requireChunking);
-      if (text != null) params.text = text;
-      return apiPost(base, "/continue_extraction", params, extension ?? undefined);
+    function continueExtraction(sessionId, approved, text, requireChunking, extension) {
+      // The markdown is the request body. Putting it in the query string
+      // percent-encodes it into the URL and truncates large documents.
+      return apiPost(API_BASE, "/continue_extraction", { session_id: sessionId }, {
+        approved: approved ?? null,
+        text: text ?? null,
+        require_chunking: requireChunking ?? null,
+        extension: extension ?? null,
+      });
     }
 
-    function postExtraction(base, sessionId, extension) {
-      return apiPost(base, "/post_extraction", { session_id: sessionId }, extension ?? null);
+    function postExtraction(sessionId, extension) {
+      return apiPost(API_BASE, "/post_extraction", { session_id: sessionId }, extension ?? null);
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -212,13 +229,12 @@
 
     const STEPS = [
       { id: "setup",    label: "Setup",             desc: "Enter details" },
-      { id: "content",  label: "Content Review",    desc: "Review 1st extraction" },
-      { id: "content2", label: "2nd Extraction",    desc: "Review alternative text" },
+      { id: "content",  label: "Content Review",    desc: "Review MinerU text" },
       { id: "final",    label: "Extension Review",  desc: "Review metadata extension" },
       { id: "success",  label: "Complete",          desc: "Done" },
     ];
 
-    function StepBar({ step, slideNum }) {
+    function StepBar({ step }) {
       const cur = STEPS.findIndex((s) => s.id === step);
       return (
         <div className="mb-8">
@@ -270,14 +286,6 @@
             <p className="text-xs text-slate-400">{STEPS[cur]?.desc}</p>
           </div>
 
-          {/* Slide indicator for PPT */}
-          {slideNum > 0 && (
-            <div className="flex justify-center mt-4">
-              <span className="px-4 py-1.5 bg-amber-100 text-amber-700 border border-amber-200 rounded-full text-xs font-bold tracking-wide">
-                📄 Processing Slide {slideNum}
-              </span>
-            </div>
-          )}
         </div>
       );
     }
@@ -286,11 +294,9 @@
     // STEP 1 — SETUP
     // ═══════════════════════════════════════════════════════════════════════════
 
-    function SetupStep({ apiBase, setApiBase, onSubmit }) {
+    function SetupStep({ onSubmit }) {
       const [project, setProject] = useState("");
       const [source, setSource] = useState("");
-      const [langs, setLangs] = useState("en, ja");
-      const [showAdv, setShowAdv] = useState(false);
       const [showExt, setShowExt] = useState(false);
       const [extRaw, setExtRaw] = useState("");
       const [extErr, setExtErr] = useState("");
@@ -329,14 +335,12 @@
         setErr("");
         if (!project.trim()) { setErr("Project name is required."); return; }
         if (!source.trim())  { setErr("Source path is required."); return; }
-        const languages = langs.split(",").map((s) => s.trim()).filter(Boolean);
-        if (languages.length === 0) { setErr("At least one language is required."); return; }
         if (extErr) { setErr("Fix the extension schema errors before submitting."); return; }
 
         const extensionStr = extRaw.trim() && extRaw.trim() !== "[]" ? extRaw.trim() : null;
 
         try {
-          await onSubmit(project.trim(), source.trim(), languages, extensionStr);
+          await onSubmit(project.trim(), source.trim(), extensionStr);
         } catch (e) {
           setErr(e.message);
         }
@@ -387,8 +391,8 @@
                   placeholder="store/s3/raw/report.pdf"
                   className="w-full px-4 py-2.5 border border-slate-300 rounded-xl text-sm font-mono focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
                 />
-                <p className="text-xs text-slate-400 mt-1.5">
-                  Supported formats: <code className="text-slate-500">.pdf .pptx .jpg .jpeg .png</code>
+                <p className="text-xs text-slate-400 mt-1.5 leading-relaxed">
+                  Supported formats: <code className="text-slate-500">.pdf .jpg .jpeg .png .doc .docx .xls .xlsx .ppt .pptx</code>
                 </p>
               </div>
 
@@ -446,48 +450,6 @@
                 )}
               </div>
 
-              {/* Advanced settings */}
-              <div className="border border-slate-200 rounded-xl overflow-hidden">
-                <button
-                  type="button"
-                  onClick={() => setShowAdv(!showAdv)}
-                  className="w-full px-4 py-3 flex items-center justify-between text-sm hover:bg-slate-50 transition-colors"
-                >
-                  <span className="font-semibold text-slate-600">⚙ Advanced Settings</span>
-                  <span className="text-slate-400 text-xs">{showAdv ? "▴ collapse" : "▾ expand"}</span>
-                </button>
-                {showAdv && (
-                  <div className="px-4 pb-5 pt-2 bg-slate-50 border-t border-slate-100 space-y-4">
-                    <div>
-                      <label className="block text-xs font-semibold text-slate-600 mb-1.5">
-                        API Base URL
-                      </label>
-                      <input
-                        type="text"
-                        value={apiBase}
-                        onChange={(e) => setApiBase(e.target.value)}
-                        className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm font-mono bg-white focus:ring-2 focus:ring-blue-400 focus:border-transparent transition-all"
-                      />
-                      <p className="text-xs text-slate-400 mt-1">
-                        Backend server URL (e.g. <code>http://localhost:8001</code>)
-                      </p>
-                    </div>
-                    <div>
-                      <label className="block text-xs font-semibold text-slate-600 mb-1.5">
-                        OCR Languages (comma-separated)
-                      </label>
-                      <input
-                        type="text"
-                        value={langs}
-                        onChange={(e) => setLangs(e.target.value)}
-                        className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm font-mono bg-white focus:ring-2 focus:ring-blue-400 focus:border-transparent transition-all"
-                      />
-                      <p className="text-xs text-slate-400 mt-1">Default: <code>en, ja</code></p>
-                    </div>
-                  </div>
-                )}
-              </div>
-
               <button
                 type="submit"
                 className="w-full py-3.5 bg-blue-600 hover:bg-blue-700 active:scale-[0.99] text-white font-bold rounded-xl transition-all shadow shadow-blue-200 text-sm"
@@ -504,6 +466,69 @@
     // STEP 2 — CONTENT REVIEW
     // ═══════════════════════════════════════════════════════════════════════════
 
+    function LayoutPdf({ layout }) {
+      const [src, setSrc] = useState("");
+      const [failed, setFailed] = useState(false);
+
+      useEffect(() => {
+        let objectUrl = "";
+        try {
+          const binary = atob(layout);
+          const bytes = new Uint8Array(binary.length);
+          for (let i = 0; i < binary.length; i += 1) {
+            bytes[i] = binary.charCodeAt(i);
+          }
+          objectUrl = URL.createObjectURL(
+            new Blob([bytes], { type: "application/pdf" })
+          );
+          setSrc(objectUrl);
+        } catch {
+          setFailed(true);
+        }
+        return () => {
+          if (objectUrl) URL.revokeObjectURL(objectUrl);
+        };
+      }, [layout]);
+
+      return (
+        <div>
+          <div className="flex items-center justify-between mb-2.5 gap-3">
+            <div>
+              <span className="text-sm font-semibold text-slate-700">Layout reference</span>
+              <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">
+                Detected regions on the original pages. Compare them with the extracted text before accepting the parse.
+              </p>
+            </div>
+            {src && (
+              <a
+                href={src}
+                target="_blank"
+                rel="noreferrer"
+                className="flex-shrink-0 text-xs font-semibold text-blue-600 hover:text-blue-700"
+              >
+                Open PDF
+              </a>
+            )}
+          </div>
+          {failed ? (
+            <div className="p-4 bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-800">
+              The layout PDF could not be rendered.
+            </div>
+          ) : src ? (
+            <iframe
+              title="MinerU layout PDF"
+              src={src}
+              className="review-pane w-full rounded-xl border border-slate-200 bg-slate-100"
+            />
+          ) : (
+            <div className="review-pane rounded-xl border border-slate-200 bg-slate-50 grid place-items-center text-sm text-slate-400">
+              Loading layout…
+            </div>
+          )}
+        </div>
+      );
+    }
+
     function MdPreview({ text }) {
       const html = useMemo(() => {
         if (!text || !text.trim())
@@ -514,8 +539,7 @@
 
       return (
         <div
-          className="md p-5 bg-white border border-slate-200 rounded-xl overflow-y-auto text-sm leading-relaxed"
-          style={{ maxHeight: 400 }}
+          className="review-pane md p-5 bg-white border border-slate-200 rounded-xl overflow-y-auto text-sm leading-relaxed"
           dangerouslySetInnerHTML={{ __html: html }}
         />
       );
@@ -565,26 +589,17 @@
       return (
         <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
           {/* Header */}
-          <div className={`px-8 py-6 border-b border-slate-100 bg-gradient-to-br ${req.is_second_extraction ? "from-orange-50 to-amber-50" : "from-green-50 to-emerald-50"}`}>
+          <div className="px-8 py-6 border-b border-slate-100 bg-gradient-to-br from-green-50 to-emerald-50">
             <div className="flex items-start justify-between gap-4">
               <div className="flex items-center gap-3">
-                <div className={`w-8 h-8 rounded-lg grid place-items-center text-white text-sm flex-shrink-0 ${req.is_second_extraction ? "bg-orange-500" : "bg-green-600"}`}>
-                  {req.is_second_extraction ? "🔄" : "📝"}
+                <div className="w-8 h-8 rounded-lg grid place-items-center text-white text-sm flex-shrink-0 bg-green-600">
+                  📝
                 </div>
                 <div>
-                  <div className="flex items-center gap-2">
-                    <h2 className="text-xl font-bold text-slate-800">
-                      {req.is_second_extraction ? "2nd Extraction Review" : "Content Review"}
-                    </h2>
-                    {req.is_second_extraction && (
-                      <span className="text-[10px] font-bold px-2 py-0.5 bg-orange-100 text-orange-600 rounded-full">
-                        Alternative method
-                      </span>
-                    )}
-                  </div>
+                  <h2 className="text-xl font-bold text-slate-800">Content Review</h2>
                   <p className="text-slate-500 text-sm mt-0.5">
-                    {req.is_second_extraction
-                      ? "The first extraction was rejected. Review this alternative extraction result."
+                    {req.layout
+                      ? "Compare the layout reference with the extracted text, then approve or reject the parse."
                       : "Review the extracted text. You may edit it before approving."}
                   </p>
                 </div>
@@ -604,6 +619,12 @@
 
           <div className="p-8 space-y-6">
             <Alert type="error" msg={err} onClose={() => setErr("")} />
+
+            {/* Layout reference beside the extracted text, when MinerU drew one */}
+            <div className={req.layout ? "grid grid-cols-1 lg:grid-cols-2 gap-6 items-start" : ""}>
+            {req.layout && (
+              <LayoutPdf layout={req.layout} />
+            )}
 
             {/* Content area */}
             <div>
@@ -632,12 +653,11 @@
                 <textarea
                   value={text}
                   onChange={(e) => setText(e.target.value)}
-                  rows={18}
                   placeholder="Extracted content will appear here…"
-                  className="w-full px-4 py-3 border border-slate-300 rounded-xl text-sm font-mono leading-relaxed focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-y transition-all"
-                  style={{ minHeight: 200 }}
+                  className="review-pane w-full px-4 py-3 border border-slate-300 rounded-xl text-sm font-mono leading-relaxed focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-y transition-all"
                 />
               )}
+            </div>
             </div>
 
             {/* Auto-process notice — shown when permit_reject=false (over token threshold) */}
@@ -706,10 +726,7 @@
             {req.permit_reject && !approved && (
               <Alert
                 type="warn"
-                msg={req.is_second_extraction
-                  ? "This content will be rejected. The pipeline will fall back to VLM to generate alternative keyword and semantic texts."
-                  : "This content will be rejected. The pipeline will attempt a second extraction using an alternative method for you to review."
-                }
+                msg="This content will be rejected. The pipeline will fall back to VLM to generate keyword and semantic texts."
               />
             )}
 
@@ -877,12 +894,10 @@
     // ═══════════════════════════════════════════════════════════════════════════
 
     function App() {
-      const [apiBase, setApiBase] = useState("http://localhost:8001");
       const [step,    setStep]    = useState("setup");
       const [loading, setLoading] = useState(false);
       const [loadMsg, setLoadMsg] = useState("");
       const [req,     setReq]     = useState(null);
-      const [slideNum, setSlideNum] = useState(0);
 
       // Wraps an async action with loading state; errors propagate to callers.
       const withLoad = (msg, fn) => async (...args) => {
@@ -896,45 +911,36 @@
       };
 
       // Step 1 → Step 2
-      const handleStart = withLoad("Starting extraction…", async (project, source, languages, extension) => {
-        const result = await startExtraction(apiBase, project, source, languages, extension);
+      const handleStart = withLoad("Starting extraction…", async (project, source, extension) => {
+        const result = await startExtraction(project, source, extension);
         setReq(result);
-        setSlideNum(1);
         setStep("content");
       });
 
-      // Step 2 → Step 2b (second extraction review) OR Step 3 (extension review) OR back to Step 2 (next PPTX slide) OR Step 4 (success)
+      // Step 2 → extension review, or success when the graph has finished
       const handleContinue = withLoad("Processing review…", async ({ sessionId, approved, text, requireChunking, extension }) => {
-        const result = await continueExtraction(apiBase, sessionId, approved, text, requireChunking, extension);
+        const result = await continueExtraction(sessionId, approved, text, requireChunking, extension);
         if (result === null || result === undefined) {
-          // Graph reached END with no further interrupts → done
           setStep("success");
         } else if (result.review_type === "extension") {
-          // LLM extracted extension → _review_extension interrupt → show extension review
           setReq(result);
           setStep("final");
-        } else if (result.is_second_extraction) {
-          // First extraction was rejected → second extraction ready for review
-          setReq(result);
-          setStep("content2");
         } else {
-          // Next PPTX slide → loop back to content review
           setReq(result);
-          setSlideNum((n) => n + 1);
           setStep("content");
         }
       });
 
-      // Step 3 → Success or back to Step 2 (PPT loop)
+      // Step 3 → success once the reviewed extension is stored
       const handlePost = withLoad("Uploading to knowledge base…", async ({ sessionId, extension }) => {
-        const result = await postExtraction(apiBase, sessionId, extension);
+        const result = await postExtraction(sessionId, extension);
         if (result === null || result === undefined) {
-          // Null → workflow complete
           setStep("success");
-        } else {
-          // ReviewRequest → next PPT slide, loop back to content review
+        } else if (result.review_type === "extension") {
           setReq(result);
-          setSlideNum((n) => n + 1);
+          setStep("final");
+        } else {
+          setReq(result);
           setStep("content");
         }
       });
@@ -942,7 +948,6 @@
       const handleNew = () => {
         setStep("setup");
         setReq(null);
-        setSlideNum(0);
       };
 
       return (
@@ -951,7 +956,7 @@
 
           {/* ── Sticky header ── */}
           <header className="bg-white border-b border-slate-200 sticky top-0 z-10 shadow-sm">
-            <div className="max-w-3xl mx-auto px-4 sm:px-6 h-14 flex items-center justify-between">
+            <div className={`${step === "content" && req && req.layout ? "max-w-screen-2xl" : "max-w-3xl"} mx-auto px-4 sm:px-6 h-14 flex items-center justify-between`}>
               <div className="flex items-center gap-3">
                 <div className="w-8 h-8 bg-blue-600 rounded-lg grid place-items-center text-white font-black text-xs shadow shadow-blue-200">
                   DE
@@ -971,23 +976,15 @@
           </header>
 
           {/* ── Main content ── */}
-          <main className="max-w-3xl mx-auto px-4 sm:px-6 py-10">
-            <StepBar step={step} slideNum={slideNum > 1 ? slideNum : 0} />
+          <main className={`${step === "content" && req && req.layout ? "max-w-screen-2xl" : "max-w-3xl"} mx-auto px-4 sm:px-6 py-10`}>
+            <StepBar step={step} />
 
             {step === "setup" && (
-              <SetupStep
-                apiBase={apiBase}
-                setApiBase={setApiBase}
-                onSubmit={handleStart}
-              />
+              <SetupStep onSubmit={handleStart} />
             )}
 
             {step === "content" && req && (
-              <ContentReviewStep key={slideNum} req={req} onSubmit={handleContinue} />
-            )}
-
-            {step === "content2" && req && (
-              <ContentReviewStep key="second" req={req} onSubmit={handleContinue} />
+              <ContentReviewStep key={req.session_id} req={req} onSubmit={handleContinue} />
             )}
 
             {step === "final" && req && (

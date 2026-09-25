@@ -12,9 +12,7 @@ def store_metadata(project: str, metadata: Metadata) -> None:
     # Use Postgres for metadata storage. Extension can be stored as JSONB.
     if not Path(f"store/postgres/{project}").exists():
         Path(f"store/postgres/{project}").mkdir(parents=True, exist_ok=True)
-    metadata_path = Path(
-        f"store/postgres/{project}/{Path(metadata.file_name).stem}.json"
-    )
+    metadata_path = Path(f"store/postgres/{project}/{metadata.filename}.json")
     with open(metadata_path, "w", encoding="utf-8") as f:
         f.write(metadata.model_dump_json(indent=4, exclude_none=True))
 
@@ -36,7 +34,6 @@ def parse_extension(extension: str) -> Type[BaseModel]:
     ]
     """
     fields_config = json.loads(extension)
-    json.loads(extension)
     fields = {}
 
     for item in fields_config:

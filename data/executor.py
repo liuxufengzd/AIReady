@@ -1,4 +1,4 @@
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Type
 import mimetypes
@@ -6,14 +6,20 @@ import shutil
 import tempfile
 import uuid
 
-from pptxtoimages.tools import PPTXToImageConverter
 from pydantic import BaseModel
 from langgraph.types import Command, StateSnapshot
 
 from common.logger import get_logger
 from data.common import const
+from data.common.office_converter import is_office_document, office_to_pdf
 from data.common.utils import store_metadata
 from grpc_protos.search.search_client import SearchClient
+from data.common.store_paths import (
+    layout_path,
+    markdown_path,
+    processed_artifact_dir,
+    promote_review_artifacts,
+)
 from data.extract_graph import ExtractGraph
 from data.model.matadata import Chunk, Metadata
 from data.model.review_request import ReviewRequest
@@ -29,15 +35,16 @@ class _Session:
 
     project: str
     source: Path
-    languages: list[str]
     meta_schema: Type[BaseModel] | None
-    is_pptx: bool
-
-    # PPT-specific
-    images: list[Path] = field(default_factory=list)
+    # PDF rendering for an Office file; the original file for every other type.
+    parse_source: Path
     temp_dir: Path | None = None
-    current_page: int = 1
-    previous_summary: str = ""
+
+
+def _chunk_field(chunk: object, name: str):
+    if isinstance(chunk, dict):
+        return chunk.get(name)
+    return getattr(chunk, name)
 
 
 class Executor:
@@ -73,13 +80,16 @@ class Executor:
                 "Failed to delete checkpoints for thread %s", thread_id, exc_info=True
             )
 
+    def _discard_session(self, session_id: str) -> None:
+        session = self._sessions.pop(session_id, None)
+        if session is not None and session.temp_dir is not None:
+            shutil.rmtree(session.temp_dir, ignore_errors=True)
+
     async def start(
         self,
-        session_id: str,
         project: str,
         source: Path,
         *,
-        languages: list[str] = const.DEFAULT_LANGUAGES,
         meta_schema: Type[BaseModel] | None = None,
     ) -> ReviewRequest:
         """Validate the source file, initialise a session, and run the graph until the human-review interrupt."""
@@ -88,26 +98,45 @@ class Executor:
             raise FileNotFoundError(f"Source file not found: {source}")
         if not source.is_file():
             raise ValueError(f"Source path is not a file: {source}")
-        if source.suffix not in const.SUPPORTED_FILE_TYPES:
+        if source.suffix.lower() not in const.SUPPORTED_FILE_TYPES:
             raise ValueError(f"Unsupported file type: {source.suffix}")
+
+        temp_dir: Path | None = None
+        parse_source = source
+        if is_office_document(source):
+            temp_dir = Path(tempfile.mkdtemp(prefix="office-pdf-"))
+            try:
+                parse_source = office_to_pdf(source, temp_dir)
+            except Exception:
+                shutil.rmtree(temp_dir, ignore_errors=True)
+                raise
+            logger.info(f"Converted Office file to PDF: {parse_source}")
 
         session = _Session(
             project=project,
             source=source,
-            languages=languages,
             meta_schema=meta_schema,
-            is_pptx=source.suffix == ".pptx",
+            parse_source=parse_source,
+            temp_dir=temp_dir,
         )
-
-        if session.is_pptx:
-            tmp = tempfile.mkdtemp()
-            images = PPTXToImageConverter(pptx_path=source, output_dir=tmp).convert()
-            logger.info(f"Converted {len(images)} slides to images in '{tmp}'")
-            session.images = images
-            session.temp_dir = Path(tmp)
-
+        session_id = str(uuid.uuid4())
         self._sessions[session_id] = session
-        return await self._invoke(session_id)
+        try:
+            return await self._invoke(session_id)
+        except Exception:
+            self._discard_session(session_id)
+            raise
+
+    def _graph_config(self, session_id: str) -> dict:
+        session = self._sessions[session_id]
+        return {
+            "configurable": {
+                "thread_id": session_id,
+                "project": session.project,
+                "source_name": session.source.name,
+                "search_meta_schema": session.meta_schema,
+            }
+        }
 
     async def continue_after_content_review(
         self,
@@ -115,21 +144,21 @@ class Executor:
         approved: bool,
         text: str | None,
         require_chunking: bool = False,
+        extension: dict | None = None,
     ) -> ReviewRequest | None:
         """Resume the graph after the extracted content is reviewed by the human"""
         await self._ensure_graph()
-        config = {
-            "configurable": {
-                "thread_id": session_id,
-                "project": self._sessions[session_id].project,
-                "search_meta_schema": self._sessions[session_id].meta_schema,
-            }
-        }
+        session = self._sessions[session_id]
+        if approved and text is not None:
+            path = markdown_path(session.project, session.source.stem)
+            path.write_text(text, encoding="utf-8")
+            logger.info(f"Updated review markdown: {path}")
 
+        config = self._graph_config(session_id)
         response = ReviewResponse(
             approved=approved,
-            content=text,
             require_chunking=require_chunking,
+            extension=extension,
         )
         await self.graph.ainvoke(Command(resume=response), config)
 
@@ -138,71 +167,42 @@ class Executor:
             if task.interrupts:
                 return self._build_review_request(session_id, state)
 
-        return await self._finalize(session_id, state.values)
+        return await self._finalize(session_id)
 
     async def continue_after_extension_review(
         self,
         session_id: str,
         extension: dict | None,
-    ) -> ReviewRequest | None:
+    ) -> None:
         """Resume the graph with the human-reviewed extension"""
         await self._ensure_graph()
-        config = {"configurable": {"thread_id": session_id}}
+        config = self._graph_config(session_id)
         response = ReviewResponse(extension=extension)
         await self.graph.ainvoke(Command(resume=response), config)
 
-        state = await self.graph.aget_state(config)
-        return await self._finalize(session_id, state.values)
+        return await self._finalize(session_id)
 
-    async def _finalize(self, session_id: str, values: dict) -> ReviewRequest | None:
-        """Advance the PPTX page counter and invoke the next slide, or upload and clean up."""
+    async def _finalize(self, session_id: str) -> None:
+        """Upload the accepted result and drop the session."""
         session = self._sessions[session_id]
-        if session.is_pptx:
-            session.previous_summary = values["text_pairs"][-1].semantic_text
-            session.current_page += 1
-            if session.current_page <= len(session.images):
-                return await self._invoke(session_id)
         await self._upload_metadata(session_id)
         await self._upload_file(session_id)
+        # We can use message queue for indexing
         await self._index_file(session.project, session.source.name)
-        del self._sessions[session_id]
+        self._discard_session(session_id)
         await self._delete_thread(session_id)
 
     async def _invoke(self, session_id: str) -> ReviewRequest:
-        """Create a fresh LangGraph thread for the current PPTX page or the whole file, run until the interrupt"""
+        """Run the graph on the whole file until the human-review interrupt."""
         session = self._sessions[session_id]
-        config = {
-            "configurable": {
-                "thread_id": session_id,
-                "project": session.project,
-                "search_meta_schema": session.meta_schema,
-            }
-        }
+        config = self._graph_config(session_id)
 
-        if session.is_pptx:
-            idx = session.current_page - 1
-            context = f"Slide {idx + 1} of PowerPoint: {session.source.stem}."
-            if session.previous_summary:
-                context += f" Previous slide summary: {session.previous_summary}"
-            logger.info(f"Processing slide {idx + 1}/{len(session.images)}")
-            await self.graph.ainvoke(
-                {
-                    "source": Path(session.images[idx]),
-                    "languages": session.languages,
-                    "context": context,
-                    "ask_chunking": False,
-                },
-                config,
-            )
-        else:
-            await self.graph.ainvoke(
-                {
-                    "source": session.source,
-                    "languages": session.languages,
-                    "ask_chunking": True,
-                },
-                config,
-            )
+        await self.graph.ainvoke(
+            {
+                "source": session.parse_source,
+            },
+            config,
+        )
 
         state = await self.graph.aget_state(config)
         return self._build_review_request(session_id, state)
@@ -214,7 +214,20 @@ class Executor:
         for task in state.tasks:
             if task.interrupts:
                 request: ReviewRequest = task.interrupts[0].value
-                return request.model_copy(update={"session_id": session_id})
+                updates: dict = {"session_id": session_id}
+                if request.review_type == "content":
+                    session = self._sessions[session_id]
+                    to_review = markdown_path(session.project, session.source.stem)
+                    layout = layout_path(session.project, session.source.stem)
+                    updates["content"] = (
+                        to_review.read_text(encoding="utf-8")
+                        if to_review.is_file()
+                        else None
+                    )
+                    updates["layout"] = (
+                        layout.read_bytes() if layout.is_file() else None
+                    )
+                return request.model_copy(update=updates)
         raise RuntimeError(
             f"Expected an interrupt but none found for session '{session_id}'"
         )
@@ -233,19 +246,18 @@ class Executor:
         chunks = [
             Chunk(
                 id=str(uuid.uuid4()),
-                page_num=index if session.is_pptx else None,
-                semantic_text=text_pair.semantic_text,
-                keyword_text=text_pair.keyword_text,
-                retrieve_raw_file=text_pair.retrieve_raw_file,
+                semantic_text=_chunk_field(chunk, "semantic_text"),
+                keyword_text=_chunk_field(chunk, "keyword_text"),
+                retrieve_raw_file=bool(_chunk_field(chunk, "retrieve_raw_file")),
             )
-            for index, text_pair in enumerate(values["text_pairs"], start=1)
+            for chunk in values["chunks"]
         ]
 
         metadata = Metadata(
             project=session.project,
             mime_type=mimetypes.guess_type(source)[0],
             size=source.stat().st_size,
-            file_name=source.name,
+            filename=source.stem,
             chunks=chunks,
             extension=values.get("extension", None),
         )
@@ -254,21 +266,17 @@ class Executor:
         store_metadata(session.project, metadata)
 
     async def _upload_file(self, session_id: str) -> None:
-        """Upload the raw source file."""
+        """Promote an accepted parse, and keep a readable raw file when review fell back to it."""
         session = self._sessions[session_id]
         source = session.source
-        sink = Path(f"store/s3/processed/{session.project}/{source.name}")
-        logger.info(f"Uploading raw file: {source} → {sink}")
-        if session.is_pptx and session.temp_dir:
-            target_dir = sink.parent / sink.stem
-            target_dir.mkdir(parents=True, exist_ok=True)
-            for file in session.temp_dir.glob("*.png"):
-                shutil.copy(file, target_dir / file.name)
-            # delete the temp directory
-            shutil.rmtree(session.temp_dir)
-        else:
-            sink.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy(source, sink)
+        promoted = promote_review_artifacts(session.project, source.stem)
+        if promoted:
+            return
+
+        sink = processed_artifact_dir(session.project, source.stem)
+        shutil.rmtree(sink, ignore_errors=True)
+        sink.mkdir(parents=True)
+        shutil.copy(session.parse_source, sink / session.parse_source.name)
 
     async def _index_file(self, project: str, source_file_name: str) -> None:
         """Index the file using the search client."""

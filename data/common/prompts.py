@@ -36,10 +36,6 @@ Strict well-structured Markdown:
 # TARGET QUERIES (INFERRED INTENT)
 * [Question 1?]
 * [Question 2?]
-
-### Input Context
-You can use the following context to help you summarize the file:
-{context}
 """
 
 PROMPT_FOR_KEYWORD = """

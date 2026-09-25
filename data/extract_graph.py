@@ -1,4 +1,8 @@
-"""Currently only support small file mode: image, pdf, powerpoint."""
+"""Small-file extraction: image, PDF, and Office documents.
+
+An Office file is converted to one PDF before this graph runs, then parsed and
+reviewed as a single document.
+"""
 
 from typing import Annotated, TypedDict
 import operator
@@ -19,14 +23,13 @@ from pydantic import BaseModel
 from langchain_core.messages import SystemMessage
 from data.common.prompts import EXTENSION_PROMPT
 from data.common import const
+from data.common.store_paths import discard_review_artifacts, markdown_path
 from data.extractor.mineru_extractor import MineruExtractor
-from data.extractor.llamaparse_extractor import LlamaParseExtractor
 from data.extractor.vlm_extractor import VLMExtractor
 from data.model.review_request import ReviewRequest
 from pathlib import Path
 from typing import Type
-from data.model.text_pair import TextPair
-import shutil
+from data.model.chunk_detail import ChunkDetail
 
 
 logger = get_logger(__name__)
@@ -34,139 +37,108 @@ logger = get_logger(__name__)
 
 class ExtractState(TypedDict):
     source: Path
-    languages: list[str]
-    context: str
-    ask_chunking: bool
 
-    # Raw extracted text, written by _extract and read by _review
-    extracted_text: str
-    first_extraction: bool
-    text_pairs: Annotated[list[TextPair], operator.add]
+    # Token count of the parsed markdown.
+    token_num: int
+    chunks: Annotated[list[ChunkDetail], operator.add]
     extension: dict | None
 
 
 class ExtractGraph:
     def __init__(self):
         self.llm = get_llm()
-        self.first_extractor = MineruExtractor()
-        self.second_extractor = LlamaParseExtractor()
+        self.mineru_extractor = MineruExtractor()
         self.vlm_extractor = VLMExtractor()
 
     async def _extract(self, state: ExtractState, config: RunnableConfig) -> dict:
-        """Run extraction using the appropriate extractor and store the extracted text in the state."""
+        """Extract with MinerU into the review directory and keep only a token count."""
         source = state.get("source")
+        project = config.get("configurable", {}).get("project")
         logger.info(f"Extracting text from {source}")
 
-        first_extraction = state.get("first_extraction", True)
-        if first_extraction:
-            text = await self.first_extractor.extract(
-                project=config.get("configurable", {}).get("project"),
-                source=source,
-                languages=state.get("languages"),
-            )
-        else:
-            text = await self.second_extractor.extract(source)
-
-        return {
-            "extracted_text": text,
-            "first_extraction": first_extraction,
-        }
+        await self.mineru_extractor.extract(project, source)
+        document = markdown_path(project, source.stem).read_text(encoding="utf-8")
+        return {"token_num": self.llm.get_num_tokens(document)}
 
     async def _review(self, state: ExtractState, config: RunnableConfig) -> dict:
-        """Present extracted text for human review"""
-        text = state.get("extracted_text", "")
-        token_num = self.llm.get_num_tokens(text)
-        over_chunk_threshold = token_num > const.MUST_CHUNK_TOKEN_THRESHOLD
-        ask_chunking = state.get("ask_chunking", True)
-        if over_chunk_threshold and not ask_chunking:
-            raise ValueError("Text is too long, try to split it into separate pages.")
+        """Present extracted text for human review.
 
-        first_extraction = state.get("first_extraction")
+        The markdown stays on disk. This node records only the token count in
+        the interrupt, then reads the file again after the human resumes.
+        """
+        token_num = state.get("token_num", 0)
+        over_chunk_threshold = token_num > const.MUST_CHUNK_TOKEN_THRESHOLD
 
         review_response: ReviewResponse = interrupt(
             ReviewRequest(
                 review_type="content",
-                content=text,
                 ask_extension=over_chunk_threshold,
                 token_num=token_num,
-                ask_chunking=not over_chunk_threshold and ask_chunking,
-                permit_reject=not over_chunk_threshold or first_extraction,
-                is_second_extraction=first_extraction is False,
+                ask_chunking=not over_chunk_threshold,
             )
         )
 
         source = state.get("source")
-        image_folder = Path(
-            f"store/s3/images/{config.get('configurable', {}).get('project')}/{source.name}"
-        )
+        project = config.get("configurable", {}).get("project")
+        if not review_response.approved:
+            logger.info("Text rejected by human review, extracting content using VLM")
+            discard_review_artifacts(project, source.stem)
 
-        if not review_response.approved and first_extraction:
-            # Clean the image store folder and start a new extraction
-            if image_folder.exists():
-                shutil.rmtree(image_folder)
-            return Command(goto="_extract", update={"first_extraction": False})
-
-        if review_response.approved or over_chunk_threshold:
-            keyword_text = semantic_text = review_response.content
-            if review_response.require_chunking or over_chunk_threshold:
-                chunks = chunk_md(keyword_text)
-                logger.info(f"Chunked text into {len(chunks)} chunks")
-                return Command(
-                    goto="_extract_metadata_extension",
-                    update={
-                        "text_pairs": [
-                            TextPair(
-                                semantic_text=text,
-                                keyword_text=text,
-                                retrieve_raw_file=False,
-                            )
-                            for text in chunks
-                        ],
-                        "extension": review_response.extension,
-                    },
-                )
-            token_num = self.llm.get_num_tokens(keyword_text)
-            if token_num > const.EMBEDDING_TOKEN_LIMIT:
-                logger.info(
-                    "Summarizing text for vector database because the token number exceeds the limit"
-                )
-                semantic_text = await self.vlm_extractor.extract_summary(
-                    text=semantic_text
-                )
+            # Extract the summary and keyword using VLM
+            summary = await self.vlm_extractor.extract_summary(source)
+            keyword = await self.vlm_extractor.extract_keyword(source)
             return Command(
                 goto="_extract_metadata_extension",
                 update={
-                    "text_pairs": [
-                        TextPair(
-                            semantic_text=semantic_text,
-                            keyword_text=keyword_text,
-                            retrieve_raw_file=False,
+                    "chunks": [
+                        ChunkDetail(
+                            semantic_text=summary,
+                            keyword_text=keyword,
+                            retrieve_raw_file=True,
                         )
                     ],
                 },
             )
 
-        logger.info("Text rejected by human review, extracting content using VLM")
-
-        # Clean the image store folder
-        if image_folder.exists():
-            shutil.rmtree(image_folder)
-
-        # Extract the summary and keyword using VLM
-        summary = await self.vlm_extractor.extract_summary(
-            source, context=state.get("context", "")
+        keyword_text = semantic_text = markdown_path(project, source.stem).read_text(
+            encoding="utf-8"
         )
-        keyword = await self.vlm_extractor.extract_keyword(source)
+        token_num = self.llm.get_num_tokens(keyword_text)
+        over_chunk_threshold = token_num > const.MUST_CHUNK_TOKEN_THRESHOLD
+        if review_response.require_chunking or over_chunk_threshold:
+            chunks = chunk_md(keyword_text)
+            logger.info(f"Chunked text into {len(chunks)} chunks")
+            return Command(
+                goto="_extract_metadata_extension",
+                update={
+                    "chunks": [
+                        ChunkDetail(
+                            semantic_text=text,
+                            keyword_text=text,
+                            retrieve_raw_file=False,
+                        )
+                        for text in chunks
+                    ],
+                    "extension": review_response.extension,
+                },
+            )
+
+        if token_num > const.EMBEDDING_TOKEN_LIMIT:
+            logger.info(
+                "Summarizing text for vector database because the token number exceeds the limit"
+            )
+            semantic_text = await self.vlm_extractor.extract_summary(text=semantic_text)
         return Command(
             goto="_extract_metadata_extension",
             update={
-                "text_pairs": [
-                    TextPair(
-                        semantic_text=summary,
-                        keyword_text=keyword,
-                        retrieve_raw_file=True,
+                "chunks": [
+                    ChunkDetail(
+                        semantic_text=semantic_text,
+                        keyword_text=keyword_text,
+                        retrieve_raw_file=False,
                     )
                 ],
+                "token_num": token_num,
             },
         )
 

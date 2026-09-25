@@ -8,28 +8,32 @@ A browser-based HITL (Human-in-the-Loop) frontend for the DataExtractor API.
 
 ```bash
 # From the repo root
-mineru-api --host localhost --port 8000
+mineru-kit api-server --host 127.0.0.1 --port 8000
 python -m data.main
 ```
 
+Office files are converted to PDF with LibreOffice before parsing. Install LibreOffice and make sure `soffice` is on `PATH`. Accepted Office suffixes are Word (`.doc .docx`), Excel (`.xls .xlsx`), and PowerPoint (`.ppt .pptx`).
+
 ### 2. Open the data frontend
 
-Just double-click `frontend/data/index.html` or drag it into your browser.
+Open `http://localhost:8001` (the host and port come from `HOST` and `PORT`).
+
+The page calls the API at `API_BASE_URL` (default `http://localhost:8001`). Set that variable in `data/.env` when the API is not on the same origin as the page.
 
 ## Workflow
 
 ```
 [1. Setup]  →  [2. Content Review]  →  [3. Final Review]  →  [✓ Complete]
-                       ↑                       |
-                       └────── PPT loop ───────┘
 ```
+
+An Office file is converted to one PDF, then parsed by MinerU and reviewed once.
 
 | Step | What happens |
 |------|-------------|
-| **Setup** | Enter project name, source path, and (optional) languages. Calls `POST /start_extraction`. |
-| **Content Review** | The extracted text is shown with a markdown preview. You can edit it, approve or reject, and optionally enable chunking. Calls `POST /continue_extraction`. |
+| **Setup** | Enter project name and source path. Calls `POST /start_extraction`. |
+| **Content Review** | The MinerU text is shown with a markdown preview and, when available, a layout PDF of detected page regions. You can edit the text, approve or reject, and optionally enable chunking. Rejecting falls back to VLM extraction. Calls `POST /continue_extraction`. |
 | **Final Review** | Edit the keyword search texts, semantic search texts, and metadata JSON. Calls `POST /post_extraction`. |
-| **Complete** | If `post_extraction` returns `null`, the job is done. If it returns a `ReviewRequest` (PPT next slide), loops back to **Content Review**. |
+| **Complete** | `post_extraction` returns `null` and the job is done. |
 
 ## No build step required
 

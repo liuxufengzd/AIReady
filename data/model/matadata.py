@@ -4,7 +4,8 @@ from pydantic import BaseModel, Field
 class Chunk(BaseModel):
     id: str = Field(description="The ID of the chunk")
     page_num: int | None = Field(
-        default=None, description="The page number of the chunk, used for pptx files"
+        default=None,
+        description="Legacy slide number for PowerPoint files indexed one slide at a time.",
     )
     semantic_text: str | None = Field(
         default=None,
@@ -28,7 +29,7 @@ class Metadata(BaseModel):
     )
     mime_type: str | None = Field(default=None, description="The MIME type of the file")
     size: int | None = Field(default=None, description="The size of the file")
-    file_name: str | None = Field(default=None, description="The name of the file")
+    filename: str | None = Field(default=None, description="The name of the file")
     # Stored as JSONB in the database
     chunks: list[Chunk] = Field(
         default_factory=list, description="The chunks of the file"
