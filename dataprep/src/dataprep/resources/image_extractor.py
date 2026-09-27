@@ -1,18 +1,15 @@
-"""Describe an image so its text can be inlined into markdown."""
-
 import base64
-import logging
 import mimetypes
+import re
+import shutil
+import dagster as dg
 from pathlib import Path
 
 from langchain_core.messages import HumanMessage, SystemMessage
-from langchain_google_genai import ChatGoogleGenerativeAI
 from pydantic import BaseModel, Field
 
-logger = logging.getLogger(__name__)
-
-_LLM_NAME = "gemini-3.8-flash"
-_IMAGE_SUFFIXES = (".jpg", ".jpeg", ".png")
+from dataprep.common import const
+from dataprep.resources.llm import LLM
 
 IMAGE_META_PROMPT = """
 # Role
@@ -63,6 +60,11 @@ Generate a comprehensive, dense summary that captures all crucial information wi
 
 
 class ImageMeta(BaseModel):
+    """Structured description of one image from the vision model.
+
+    ``info_loss`` is true when that text cannot replace the original image.
+    """
+
     content: str = Field(
         description="The content of the image, which should contain all crucial information of the image"
     )
@@ -73,7 +75,7 @@ class ImageMeta(BaseModel):
 
 
 def _image_content(source: Path) -> dict[str, str]:
-    if source.suffix not in _IMAGE_SUFFIXES:
+    if source.suffix not in const.IMAGE_EXTENSIONS:
         raise ValueError(f"Unsupported file type: {source.suffix}")
     mime_type = mimetypes.guess_type(source)[0]
     encoded = base64.b64encode(source.read_bytes()).decode("utf-8")
@@ -83,17 +85,17 @@ def _image_content(source: Path) -> dict[str, str]:
     }
 
 
-class ImageExtractor:
-    def __init__(self):
-        self.llm = ChatGoogleGenerativeAI(
-            model=_LLM_NAME,
-            temperature=1.0,
-            max_retries=3,
-        )
+class ImageExtractor(dg.ConfigurableResource):
+    """Replace images in a markdown document with text from the vision model.
 
-    async def extract(self, source: Path) -> ImageMeta:
-        logger.info("Extracting image metadata for file: %s", source)
-        image_meta: ImageMeta = await self.llm.with_structured_output(
+    Fully described images are inlined and deleted. Lossy images are kept
+    under a numeric id. Images the markdown no longer references are deleted.
+    """
+
+    llm: LLM
+
+    async def extract_image(self, source: Path) -> ImageMeta:
+        image_meta: ImageMeta = await self.llm.client.with_structured_output(
             ImageMeta
         ).ainvoke(
             [
@@ -102,3 +104,58 @@ class ImageExtractor:
             ]
         )
         return image_meta
+
+    async def extract_images_from_doc(self, source: Path, images_store: Path) -> str:
+        """Extract images from a document file and keep lossy images,
+        and drop images that are not in the images store. Return the updated document text.
+
+        Args:
+            source: The path to the document file.
+            images_store: The folder path to the images store.
+        Returns:
+            The updated document text.
+        """
+        text = source.read_text(encoding="utf-8")
+        if not text.strip():
+            raise ValueError(f"Document file is empty: {source}")
+
+        image_files = sorted(
+            path
+            for path in images_store.rglob("*")
+            if path.is_file() and path.suffix.lower() in const.IMAGE_EXTENSIONS
+        )
+        image_id = 1
+        for image_file in image_files:
+            escaped_stem = re.escape(image_file.stem)
+            pattern = re.compile(
+                r"!\[[^\]]*\]\([^)]*" + escaped_stem + r"[^)]*\)"
+                r"|<img\b[^>]*" + escaped_stem + r"[^>]*>"
+            )
+            if not pattern.search(text):
+                image_file.unlink(missing_ok=True)
+                continue
+
+            image_meta: ImageMeta = await self.extract_image(image_file)
+            content = image_meta.content
+            if image_meta.info_loss:
+                stored_path = images_store / f"{image_id}{image_file.suffix.lower()}"
+                if stored_path.exists():
+                    stored_path.unlink()
+                shutil.move(image_file, stored_path)
+                image_tag = (
+                    "<Image>\n"
+                    f"  <ID>{image_id}</ID>\n"
+                    f"  <Content>{content}</Content>\n"
+                    "</Image>"
+                )
+                image_id += 1
+            else:
+                image_tag = content
+                image_file.unlink(missing_ok=True)
+            text = pattern.sub(lambda _, tag=image_tag: tag + "\n", text)
+
+        if images_store.exists() and not any(images_store.rglob("*")):
+            shutil.rmtree(images_store, ignore_errors=True)
+        source.write_text(text, encoding="utf-8")
+
+        return text
