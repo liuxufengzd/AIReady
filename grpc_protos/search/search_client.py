@@ -32,8 +32,8 @@ logger = get_logger(__name__)
 _DEFAULT_TARGET = "localhost:50051"
 
 _CHANNEL_OPTIONS = [
-    ("grpc.max_send_message_length", 50 * 1024 * 1024),   # 50 MB
-    ("grpc.max_receive_message_length", 50 * 1024 * 1024), # 50 MB
+    ("grpc.max_send_message_length", 50 * 1024 * 1024),  # 50 MB
+    ("grpc.max_receive_message_length", 50 * 1024 * 1024),  # 50 MB
     # Round-robin load balancing for headless K8s services
     ("grpc.lb_policy_name", "round_robin"),
     # Enables automatic retry for failed RPCs (e.g., transient network errors).
@@ -166,8 +166,7 @@ class SearchClient:
         """
         stub = self._ensure_connected()
         topics = [
-            search_pb2.ConvTopic(content=c, thread_id=thread_id)
-            for c in contents
+            search_pb2.ConvTopic(content=c, thread_id=thread_id) for c in contents
         ]
         response: search_pb2.StoreConvTopicsResponse = await stub.StoreConvTopics(
             search_pb2.StoreConvTopicsRequest(topics=topics)

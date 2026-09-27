@@ -1,0 +1,19 @@
+[project]
+name = "ai-ready-common"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+    "psycopg[binary]==3.3.6",
+    "psycopg-pool==3.3.3",
+]
+
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+# This directory is the import package. Map the distribution name
+# ai-ready-common onto it so `import common` keeps working.
+[tool.setuptools]
+packages = ["common"]
+package-dir = { "common" = "." }
+include-package-data = false

@@ -21,7 +21,6 @@ import dagster as dg
 from dataprep.common.const import IMAGES_DIRNAME, MARKDOWN_NAME, SUPPORTED_FILE_TYPES
 from dataprep.common.utils import document_key, document_partitions, parse_document_key
 from dataprep.dao.review import save_review
-from dataprep.resources.dbclient import DBClient
 from dataprep.resources.llm import LLM
 from dataprep.resources.image_extractor import ImageExtractor
 from dataprep.resources.local_doc_store import LocalDocStore
@@ -133,7 +132,6 @@ async def document_to_review(
     context: dg.AssetExecutionContext,
     layout: str,
     image_extractor: ImageExtractor,
-    db: DBClient,
     llm: LLM,
 ) -> dg.MaterializeResult:
     source = Path(layout)
@@ -147,7 +145,7 @@ async def document_to_review(
 
     project, filename = parse_document_key(context.partition_key)
     token_num = llm.client.get_num_tokens(text)
-    save_review(db, project, filename, token_num, "mineru")
+    save_review(project, filename, token_num, "mineru")
 
     context.log.info("Images extracted successfully, waiting for human review")
     return dg.MaterializeResult(value=str(markdown))

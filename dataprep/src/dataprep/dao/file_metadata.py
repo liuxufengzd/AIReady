@@ -4,7 +4,9 @@ from typing import Any
 
 from psycopg.types.json import Jsonb
 
-from dataprep.resources.dbclient import DBClient
+from common.db import DBClient
+
+_db = DBClient()
 
 
 _CREATE_FILE_METADATA = """
@@ -36,7 +38,6 @@ def _jsonb(extension: dict[str, Any] | None) -> Jsonb | None:
 
 
 def save_file_metadata(
-    db: DBClient,
     project: str,
     filename: str,
     mime_type: str | None,
@@ -48,8 +49,8 @@ def save_file_metadata(
     ``extension`` is optional. Omit it to store ``{}`` on insert and to leave
     an existing extension unchanged when the same file is published again.
     """
-    db.execute(_CREATE_FILE_METADATA)
-    db.execute(
+    _db.execute(_CREATE_FILE_METADATA)
+    _db.execute(
         _UPSERT_FILE_METADATA,
         (
             project,

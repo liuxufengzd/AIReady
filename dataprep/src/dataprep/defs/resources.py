@@ -1,7 +1,6 @@
 import dagster as dg
 import os
 
-from dataprep.resources.dbclient import DBClient
 from dataprep.resources.local_doc_store import LocalDocStore
 from dataprep.resources.llm import LLM
 from dataprep.resources.image_extractor import ImageExtractor
@@ -21,7 +20,6 @@ def resources() -> dg.Definitions:
     return dg.Definitions(
         resources={
             "store": LocalDocStore(),
-            "db": DBClient(),
             "llm": llm,
             "image_extractor": image_extractor,
             "vlm_extractor": vlm_extractor,

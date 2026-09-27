@@ -1,7 +1,6 @@
-"""PostgreSQL client for dataprep.
+"""PostgreSQL client shared by services that read and write the same tables.
 
-The pool is synchronous and opened on first use, so assets and sensors can
-share one client inside the Dagster process.
+The pool is synchronous and opened on first use.
 """
 
 import os
@@ -10,7 +9,6 @@ from contextlib import contextmanager
 from functools import cached_property
 from typing import Any
 
-import dagster as dg
 import psycopg
 from psycopg.conninfo import make_conninfo
 from psycopg.rows import dict_row
@@ -34,19 +32,26 @@ def _env_int(name: str, default: int) -> int:
     return int(raw)
 
 
-class DBClient(dg.ConfigurableResource):
+class DBClient:
     """Shared PostgreSQL connection pool.
 
     Unset fields are read from ``DB_HOST``, ``DB_PORT``, ``DB_USER``,
-    and ``DB_NAME`` when the pool opens. ``connection``
-    checks out a connection; ``execute``, ``fetchone``, and ``fetchall``
-    run a single statement.
+    and ``DB_NAME`` when the pool opens. ``connection`` checks out a
+    connection; ``execute``, ``fetchone``, and ``fetchall`` run a single
+    statement.
     """
 
-    host: str | None = None
-    port: int | None = None
-    user: str | None = None
-    dbname: str | None = None
+    def __init__(
+        self,
+        host: str | None = None,
+        port: int | None = None,
+        user: str | None = None,
+        dbname: str | None = None,
+    ) -> None:
+        self.host = host
+        self.port = port
+        self.user = user
+        self.dbname = dbname
 
     @cached_property
     def pool(self) -> ConnectionPool:

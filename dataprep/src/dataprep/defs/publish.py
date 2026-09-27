@@ -29,7 +29,6 @@ from dataprep.common import const
 from dataprep.common.utils import document_key, document_partitions, parse_document_key
 from dataprep.dao.file_metadata import save_file_metadata
 from dataprep.dao.review import get_review, list_ready_reviews, mark_review_processed
-from dataprep.resources.dbclient import DBClient
 from dataprep.resources.local_doc_store import LocalDocStore
 from dataprep.resources.vlm_extractor import VLMExtractor
 
@@ -157,11 +156,11 @@ async def _index_chunks(project: str, filename: str) -> None:
         await client.store(filename)
 
 
-def _ready_review(context: dg.AssetExecutionContext, db: DBClient) -> dict[str, Any]:
+def _ready_review(context: dg.AssetExecutionContext) -> dict[str, Any]:
     """Load the review row this run is publishing."""
     project, filename = parse_document_key(context.partition_key)
     engine = context.run.tags.get(_ENGINE_TAG)
-    return get_review(db, project, filename, engine)
+    return get_review(project, filename, engine)
 
 
 @dg.asset(
@@ -177,10 +176,9 @@ def _ready_review(context: dg.AssetExecutionContext, db: DBClient) -> dict[str, 
 async def chunk_or_skip(
     context: dg.AssetExecutionContext,
     store: LocalDocStore,
-    db: DBClient,
     vlm_extractor: VLMExtractor,
 ) -> dg.MaterializeResult:
-    row = _ready_review(context, db)
+    row = _ready_review(context)
     project, filename = row["project"], row["filename"]
     if not row["approved"]:
         context.log.info("Parse was rejected")
@@ -257,10 +255,9 @@ async def chunk_or_skip(
 async def vlm(
     context: dg.AssetExecutionContext,
     store: LocalDocStore,
-    db: DBClient,
     vlm_extractor: VLMExtractor,
 ) -> dg.MaterializeResult:
-    row = _ready_review(context, db)
+    row = _ready_review(context)
     project, filename = row["project"], row["filename"]
     if row["approved"]:
         context.log.info("Parse was approved")
@@ -299,9 +296,8 @@ async def vlm(
 def publish_files(
     context: dg.AssetExecutionContext,
     store: LocalDocStore,
-    db: DBClient,
 ) -> dg.MaterializeResult:
-    row = _ready_review(context, db)
+    row = _ready_review(context)
     project, filename = row["project"], row["filename"]
 
     # publish the files
@@ -313,14 +309,14 @@ def publish_files(
     raw = store.raw_file(project, filename)
     size = raw.stat().st_size if raw.is_file() else None
     mime_type = mimetypes.guess_type(filename)[0]
-    save_file_metadata(db, project, filename, mime_type, size)
+    save_file_metadata(project, filename, mime_type, size)
 
     # mark the review processed
     updated = mark_review_processed(
-        db, project, filename, row["engine"], row["create_time"]
+        project, filename, row["engine"], row["create_time"]
     )
     if updated != 1:
-        current = get_review(db, project, filename, row["engine"])
+        current = get_review(project, filename, row["engine"])
         if not (
             current
             and current["processed"]
@@ -373,8 +369,8 @@ publish_document = dg.define_asset_job(
         "publish_files sets processed, so a later index failure is not queued again."
     ),
 )
-def reviewed_document_sensor(db: DBClient) -> dg.SensorResult | dg.SkipReason:
-    rows = list_ready_reviews(db)
+def reviewed_document_sensor() -> dg.SensorResult | dg.SkipReason:
+    rows = list_ready_reviews()
     if not rows:
         return dg.SkipReason("No reviewed documents are waiting to be published.")
 

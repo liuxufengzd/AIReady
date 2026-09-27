@@ -6,7 +6,11 @@ dependencies = [
     "dagster==1.13.24",
     "psycopg[binary]==3.3.6",
     "psycopg-pool==3.3.3",
+    "ai-ready-common",
 ]
+
+[tool.uv.sources]
+ai-ready-common = { path = "../common", editable = true }
 
 [dependency-groups]
 dev = [

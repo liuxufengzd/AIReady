@@ -12,7 +12,7 @@ from docvortex.visualization import render_layout_pdf
 from mineru.parser import MinerUApiParser, ParseResult
 from mineru.parser.file_type import guess_suffix_by_path
 from mineru.parser.writer import FileBasedDataWriter
-from dataprep.common import const
+from dataprep.common.const import MARKDOWN_NAME, IMAGE_EXTENSIONS
 
 _LAYOUT_NAME = "layout.pdf"
 _MIDDLE_JSON_NAME = "middle_json.json"
@@ -67,9 +67,9 @@ class MinerUParser(BaseParser, dg.ConfigurableResource):
                 parse_path, status_callback=on_status
             )
         result.save(FileBasedDataWriter(str(tmp_dir)))
-        if not (tmp_dir / const.MARKDOWN_NAME).is_file():
+        if not (tmp_dir / MARKDOWN_NAME).is_file():
             raise FileNotFoundError(
-                f"MinerU did not write {const.MARKDOWN_NAME} in {tmp_dir}"
+                f"MinerU did not write {MARKDOWN_NAME} in {tmp_dir}"
             )
         return result.markdown
 
@@ -116,6 +116,6 @@ class MinerUParser(BaseParser, dg.ConfigurableResource):
         file_bytes = source.read_bytes()
         if suffix == "pdf":
             return file_bytes
-        if f".{suffix}" in const.IMAGE_EXTENSIONS:
+        if f".{suffix}" in IMAGE_EXTENSIONS:
             return PDFDocument.from_image(file_bytes).bytes
         return None
