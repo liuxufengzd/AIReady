@@ -1,62 +1,36 @@
 import os
-from langchain.tools import ToolRuntime, tool
-from supervisor.model.search_context import SearchContext
-from grpc_protos.search.search_client import SearchClient
-from data.common.store_paths import raw_retrieval_path
-from data.model.matadata import Metadata
 from pathlib import Path
-from common.logger import get_logger
-from common.util import read_file
+
+from langchain.tools import ToolRuntime, tool
 from langchain_core.messages import ToolMessage
 from langgraph.types import Command
+
+from common.logger import get_logger
+from common.published import load_chunks, published_dir, published_parse_source
+from common.util import read_file
+from grpc_protos.search.search_client import SearchClient
+from supervisor.model.search_context import SearchContext
 
 logger = get_logger(__name__)
 
 
-def _image_id_parts(image_id: str) -> tuple[str | None, str] | None:
-    """Split a tag id into an optional legacy slide number and the file stem."""
-    if image_id.isdigit():
-        return None, image_id
-    slide, separator, stem = image_id.partition("-")
-    if separator and slide.isdigit() and stem.isdigit():
-        return slide, stem
-    return None
-
-
-def _find_stored_image(project: str, file_name: str, image_id: str) -> Path | None:
-    """Find a lossy image kept with an accepted parse, or in the legacy image store."""
-    parts = _image_id_parts(image_id)
-    if parts is None:
+def _find_stored_image(project: str, filename: str, image_id: str) -> Path | None:
+    """Find a lossy image kept in the published images folder."""
+    if not image_id.isdigit():
         return None
-    slide, stem = parts
-    roots = (
-        Path(f"store/s3/processed/{project}/{file_name}"),
-        Path(f"store/s3/images/{project}/{file_name}"),
+    images = published_dir(project, filename) / "images"
+    if not images.is_dir():
+        return None
+    matches = sorted(
+        path
+        for path in images.glob(f"{image_id}.*")
+        if path.is_file() and path.stem == image_id
     )
-    if slide is None:
-        patterns = (
-            f"images/{stem}.*",
-            f"slide_*/images/{stem}.*",
-            f"{stem}.*",
-        )
-    else:
-        patterns = (f"slide_{slide}/images/{stem}.*",)
-    matches: list[Path] = []
-    for root in roots:
-        if not root.exists():
-            continue
-        for pattern in patterns:
-            matches.extend(
-                path
-                for path in root.glob(pattern)
-                if path.is_file() and path.stem == stem
-            )
     if not matches:
         return None
-    matches.sort()
     if len(matches) > 1:
         logger.warning(
-            f"Multiple images match id {image_id} for {file_name}; using {matches[0]}"
+            f"Multiple images match id {image_id} for {filename}; using {matches[0]}"
         )
     return matches[0]
 
@@ -79,61 +53,46 @@ async def search_domain_knowledge(
             project=context.project,
             target=os.environ.get("SEARCH_API_URL"),
         ) as client:
-            file_name_to_chunk_ids = await client.query(query, filters=context.filters)
+            filename_to_chunk_ids = await client.query(query, filters=context.filters)
 
-        if not file_name_to_chunk_ids:
+        if not filename_to_chunk_ids:
             return "No relevant documents found for the query."
 
         content_blocks: list[dict[str, str]] = []
         current_filename_to_chunk_ids: dict[str, list[str]] = runtime.state.get(
             "filename_to_chunk_ids", {}
         )
-        for file_name, chunk_ids in file_name_to_chunk_ids.items():
+        for filename, chunk_ids in filename_to_chunk_ids.items():
+            try:
+                chunks = {
+                    chunk.id: chunk for chunk in load_chunks(context.project, filename)
+                }
+            except Exception as e:
+                logger.warning(f"Error getting chunks for file {filename}: {e}")
+                continue
             for chunk_id in chunk_ids:
-                try:
-                    # Avoid adding the same file chunk multiple times to the content blocks
-                    if (
-                        file_name in current_filename_to_chunk_ids
-                        and chunk_id in current_filename_to_chunk_ids[file_name]
-                    ):
-                        continue
-                    else:
-                        current_filename_to_chunk_ids.setdefault(file_name, []).append(
-                            chunk_id
-                        )
-                    metadata: Metadata = _get_metadata(context.project, file_name)
-                except Exception as e:
-                    logger.warning(f"Error getting metadata for file {file_name}: {e}")
+                # Avoid adding the same file chunk multiple times to the content blocks
+                if (
+                    filename in current_filename_to_chunk_ids
+                    and chunk_id in current_filename_to_chunk_ids[filename]
+                ):
                     continue
+                current_filename_to_chunk_ids.setdefault(filename, []).append(chunk_id)
 
-                # For production, search the chunk in postgres database
-                chunk = next((c for c in metadata.chunks if c.id == chunk_id), None)
+                chunk = chunks.get(chunk_id)
                 if not chunk:
-                    logger.warning(f"Chunk {chunk_id} not found in file {file_name}")
+                    logger.warning(f"Chunk {chunk_id} not found in file {filename}")
                     continue
                 if chunk.retrieve_raw_file:
-                    file_path = Path(file_name)
-                    legacy_slide = None
-                    if (
-                        file_path.suffix.lower() == ".pptx"
-                        and chunk.page_num is not None
-                    ):
-                        legacy_slide = Path(
-                            f"store/s3/processed/{context.project}/{file_path.stem}/slide_{chunk.page_num}.png"
-                        )
-                    path = (
-                        legacy_slide
-                        if legacy_slide is not None and legacy_slide.is_file()
-                        else raw_retrieval_path(context.project, file_name)
-                    )
-                    if not path.exists():
+                    path = published_parse_source(context.project, filename)
+                    if not path.is_file():
                         logger.warning(f"File {path} not found")
                         continue
                     boundary_start = {
                         "type": "text",
                         "text": (
                             f"\n====== Start of Multimodal File ======\n"
-                            f"[File Name]: {file_name}\n"
+                            f"[File Name]: {filename}\n"
                             f"[File Content]:\n"
                         ),
                     }
@@ -149,7 +108,7 @@ async def search_domain_knowledge(
                         "type": "text",
                         "text": (
                             f"\n====== Start of Text Chunk ======\n"
-                            f"[File Name]: {file_name}\n"
+                            f"[File Name]: {filename}\n"
                             f"[Chunk Content]:\n"
                         ),
                     }
@@ -181,24 +140,24 @@ async def search_domain_knowledge(
 
 @tool
 async def search_for_image(
-    file_name: str, image_id: str, runtime: ToolRuntime[SearchContext]
+    filename: str, image_id: str, runtime: ToolRuntime[SearchContext]
 ) -> Command | str:
     """Searches for the original image content in the image store. Use this tool if and only if the original image content is required.
     Returns a content block containing the original image content, or an error message.
 
     Args:
-        file_name: The name of the file containing the image.
+        filename: The name of the file containing the image.
         image_id: The ID of the image to search for, which is recorded in the <Image><ID>{image_id}</ID></Image> tag.
     """
     try:
         context = runtime.context
         logger.info(
-            f"Searching for image with project: {context.project}, file name: {file_name}, image ID: {image_id}"
+            f"Searching for image with project: {context.project}, file name: {filename}, image ID: {image_id}"
         )
-        image_path = _find_stored_image(context.project, file_name, image_id)
+        image_path = _find_stored_image(context.project, filename, image_id)
         if image_path is None or not image_path.exists():
             logger.warning(
-                f"Image with ID {image_id} not found. File name: {file_name}, image ID: {image_id}"
+                f"Image with ID {image_id} not found. File name: {filename}, image ID: {image_id}"
             )
             return f"Image with ID {image_id} not found. Check the file name and image ID again."
         return Command(
@@ -247,10 +206,3 @@ async def search_conversation_history(
         return "No relevant historical conversation information found."
 
     return "\n\n---\n\n".join(contents)
-
-
-def _get_metadata(project: str, file_name: str) -> Metadata:
-    with open(
-        f"store/postgres/{project}/{Path(file_name).stem}.json", "r", encoding="utf-8"
-    ) as f:
-        return Metadata.model_validate_json(f.read())

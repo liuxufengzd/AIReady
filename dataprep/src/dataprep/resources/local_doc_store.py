@@ -4,10 +4,11 @@ from pathlib import Path
 
 import dagster as dg
 
+from common.published import store_root
 from dataprep.common.const import SUPPORTED_FILE_TYPES
 
 _SUPPORTED_SUFFIXES = frozenset(SUPPORTED_FILE_TYPES)
-_DEFAULT_STORE_ROOT = Path(__file__).resolve().parents[4] / "store" / "s3"
+_DEFAULT_STORE_ROOT = store_root()
 
 
 class LocalDocStore(dg.ConfigurableResource):

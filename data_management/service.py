@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 
 from common.const import MARKDOWN_NAME, MUST_CHUNK_TOKEN_THRESHOLD
 from common.logger import get_logger
-from common.review import (
+from data_management.dao.review import (
     close as close_db,
     get_review,
     list_reviews,

@@ -6,8 +6,9 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.staticfiles import StaticFiles
 
 from supervisor.model.thread import Thread, ThreadSummary
 from supervisor.supervisor_service import SupervisorService
@@ -42,9 +43,58 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-_FILES_DIR = Path(os.getenv("FILES_STORE", r"D:\Workspace\AIReady\store\s3\processed"))
+
+class PublishedStaticFiles(StaticFiles):
+    """Serve ``/files/{project}/{filename}`` as the original document.
+
+    A published file is a directory, ``processed/{project}/{filename}/``.
+    Citation links use that directory path. The original PDF or image is the
+    file of the same name inside it; an Office document is the converted
+    ``{stem}.pdf``.
+    """
+
+    async def get_response(self, path: str, scope):
+        try:
+            return await super().get_response(path, scope)
+        except StarletteHTTPException as exc:
+            if exc.status_code != 404:
+                raise
+        document = _published_document_path(self.directory, path)
+        if document is None:
+            raise StarletteHTTPException(status_code=404)
+        return await super().get_response(document, scope)
+
+
+def _published_document_path(
+    root: str | os.PathLike[str], request_path: str
+) -> str | None:
+    """Return the static path of the original file for a published directory."""
+    parts = Path(request_path).parts
+    if len(parts) != 2 or any(part in {".", ".."} for part in parts):
+        return None
+    project, filename = parts
+    if project != Path(project).name or filename != Path(filename).name:
+        return None
+
+    directory = (Path(root) / project / filename).resolve()
+    try:
+        directory.relative_to(Path(root).resolve())
+    except ValueError:
+        return None
+    if not directory.is_dir():
+        return None
+
+    named = directory / filename
+    converted = directory / f"{Path(filename).stem}.pdf"
+    for candidate in (named, converted):
+        if candidate.is_file():
+            return os.path.join(project, filename, candidate.name)
+    return None
+
+
+_FILES_DIR = Path(os.getenv("FILES_STORE"))
 _FILES_DIR.mkdir(parents=True, exist_ok=True)
-app.mount("/files", StaticFiles(directory=str(_FILES_DIR)), name="files")
+app.mount("/files", PublishedStaticFiles(directory=str(_FILES_DIR)), name="files")
 
 
 # ---------------------------------------------------------------------------

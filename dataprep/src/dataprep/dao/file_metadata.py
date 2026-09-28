@@ -1,4 +1,4 @@
-"""Queryable file metadata. Chunk text is stored beside the published file."""
+"""File metadata written when a document is published."""
 
 from typing import Any
 
@@ -7,7 +7,6 @@ from psycopg.types.json import Jsonb
 from common.db import DBClient
 
 _db = DBClient()
-
 
 _CREATE_FILE_METADATA = """
 CREATE TABLE IF NOT EXISTS file_metadata (
@@ -31,6 +30,10 @@ SET mime_type = EXCLUDED.mime_type,
 """
 
 
+def _ensure_file_metadata_table() -> None:
+    _db.execute(_CREATE_FILE_METADATA)
+
+
 def _jsonb(extension: dict[str, Any] | None) -> Jsonb | None:
     if extension is None:
         return None
@@ -49,7 +52,7 @@ def save_file_metadata(
     ``extension`` is optional. Omit it to store ``{}`` on insert and to leave
     an existing extension unchanged when the same file is published again.
     """
-    _db.execute(_CREATE_FILE_METADATA)
+    _ensure_file_metadata_table()
     _db.execute(
         _UPSERT_FILE_METADATA,
         (

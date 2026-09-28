@@ -180,7 +180,9 @@ class SupervisorService:
             return
 
         if result.retrieval_questions is None:
-            yield "\n\n".join(a for _, a in result.answered_from_context)
+            yield "\n\n".join(
+                item.answer for item in result.answered_from_context or []
+            )
             return
 
         # Phase 2: Resolve sub-questions in parallel.
@@ -234,7 +236,10 @@ class SupervisorService:
         )
 
         # Phase 3: Synthesize the answer, making the answer more precise and informative.
-        process_results.extend(result.answered_from_context or [])
+        process_results.extend(
+            (item.question, item.answer)
+            for item in (result.answered_from_context or [])
+        )
         context = "\n\n---\n\n".join(
             [f"Question: {q}\n\nAnswer: {a}" for q, a in process_results]
         )

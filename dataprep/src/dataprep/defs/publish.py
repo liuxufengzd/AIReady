@@ -25,6 +25,7 @@ from typing import Any, TypedDict
 import dagster as dg
 from langchain_text_splitters import MarkdownTextSplitter
 
+from common.published import CHUNKS_NAME
 from dataprep.common import const
 from dataprep.common.utils import document_key, document_partitions, parse_document_key
 from dataprep.dao.file_metadata import save_file_metadata
@@ -34,7 +35,6 @@ from dataprep.resources.vlm_extractor import VLMExtractor
 
 _RETRY = dg.RetryPolicy(max_retries=2)
 _ENGINE_TAG = "review_engine"
-_CHUNKS_NAME = "chunks.json"
 # defs/publish.py -> defs -> dataprep -> src -> dataprep project -> repo root.
 _REPO_ROOT = Path(__file__).resolve().parents[4]
 
@@ -95,7 +95,7 @@ def _publish_reviewed_files(
         incoming = list(working.iterdir())
     else:
         source = _find_parse_source(working, filename)
-        chunks = working / _CHUNKS_NAME
+        chunks = working / CHUNKS_NAME
         if not chunks.is_file():
             raise FileNotFoundError(f"No chunks to publish for {project}/{filename}")
         incoming = [source, chunks]
@@ -127,7 +127,7 @@ def _chunk_markdown(text: str) -> list[str]:
 
 def _save_chunks(directory: Path, chunks: list[ChunkText]) -> Path:
     """Store chunks in the parse directory."""
-    path = directory / _CHUNKS_NAME
+    path = directory / CHUNKS_NAME
     records = [
         {
             "id": str(uuid.uuid4()),

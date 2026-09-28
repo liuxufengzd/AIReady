@@ -63,8 +63,9 @@ grpcurl -plaintext localhost:50051 describe search.SearchService
 grpcurl -plaintext -d '{"project":"my_project","query":"what is RAG?"}' \
   localhost:50051 search.SearchService/Query
 
-# Store documents
-grpcurl -plaintext -d '{"project":"my_project","metadata_file_names":["doc.json"]}' \
+# Store documents. source_file_name is the original filename.
+# Chunks are read from store/s3/processed/{project}/{filename}/chunks.json.
+grpcurl -plaintext -d '{"project":"my_project","source_file_name":"doc.pdf"}' \
   localhost:50051 search.SearchService/Store
 ```
 

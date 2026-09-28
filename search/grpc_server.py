@@ -39,6 +39,11 @@ class SearchServiceServicer(search_pb2_grpc.SearchServiceServicer):
         except FileNotFoundError as e:
             logger.warning(f"[{request.project}] Store failed - file not found: {e}")
             return search_pb2.StoreResponse(status=search_pb2.NOT_FOUND, error=str(e))
+        except ValueError as e:
+            logger.warning(f"[{request.project}] Store failed - invalid chunks: {e}")
+            return search_pb2.StoreResponse(
+                status=search_pb2.INVALID_ARGUMENT, error=str(e)
+            )
         except Exception as e:
             logger.exception(f"[{request.project}] Store failed: {e}")
             return search_pb2.StoreResponse(status=search_pb2.INTERNAL, error=str(e))
