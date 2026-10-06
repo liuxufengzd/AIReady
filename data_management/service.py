@@ -12,6 +12,7 @@ from data_management.dao.review import (
     list_reviews,
     record_review_decision,
 )
+from data_management.paging import PAGE_SIZE, paginate
 from data_management.store import LAYOUT_NAME, asset_under, component, content_dir
 from common.util import get_llm
 
@@ -43,8 +44,31 @@ def count_tokens(text: str) -> int:
 class ReviewService:
     """Review-table queries and the markdown those rows point at."""
 
-    def list_files(self, project: str | None = None) -> list[dict]:
-        return list_reviews(project)
+    def list_files(
+        self,
+        project: str | None = None,
+        pending: bool | None = None,
+        query: str = "",
+        page: int = 1,
+        page_size: int = PAGE_SIZE,
+    ) -> dict:
+        """One page of review rows, undecided first, then newest first.
+
+        ``pending`` keeps only undecided rows (True) or decided ones (False).
+        ``query`` matches the file name or engine.
+        """
+        rows = list_reviews(project)
+        if pending is not None:
+            rows = [row for row in rows if (row["approved"] is None) == pending]
+        needle = query.strip().lower()
+        if needle:
+            rows = [
+                row
+                for row in rows
+                if needle in row["filename"].lower() or needle in row["engine"].lower()
+            ]
+        rows, paging = paginate(rows, page, page_size)
+        return {"rows": [_public_row(row) for row in rows], **paging}
 
     def open_review(self, project: str, filename: str, engine: str) -> dict:
         """Load one undecided row and the markdown waiting beside it."""

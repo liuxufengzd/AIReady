@@ -40,6 +40,7 @@ from data_management.dao.review import (
     list_review_projects,
     list_reviews,
 )
+from data_management.paging import PAGE_SIZE, paginate
 from data_management.service import Conflict, TokenCountError, count_tokens
 from data_management.store import (
     LAYOUT_NAME,
@@ -55,9 +56,17 @@ from data_management.store import (
 logger = get_logger(__name__)
 
 _SUPPORTED_SUFFIXES = frozenset(SUPPORTED_FILE_TYPES)
-_SEARCH_LIMIT = 1000
 _TOKEN_WORKERS = 8
 _EXTRACTABLE_STATES = {None, "failed"}
+# Files with no state sort first.
+_STATE_ORDER = {"failed": 1, "extracting": 2, "reviewing": 3, "indexing": 4}
+_SORT_KEYS = {
+    "name": lambda entry: entry["path"].lower(),
+    "type": lambda entry: entry.get("mime_type") or "",
+    "size": lambda entry: entry.get("size") or 0,
+    "modified": lambda entry: entry["modified"],
+    "state": lambda entry: _STATE_ORDER.get(entry.get("state"), 0),
+}
 
 
 class SearchIndexError(Exception):
@@ -88,34 +97,59 @@ class LibraryService:
             }
         return sorted(names)
 
-    def browse(self, path: str = "", query: str = "") -> dict[str, Any]:
-        """List one directory under ``raw``, or search below it by file name."""
+    def browse(
+        self,
+        path: str = "",
+        query: str = "",
+        state: str = "all",
+        sort: str = "name",
+        descending: bool = False,
+        page: int = 1,
+        page_size: int = PAGE_SIZE,
+    ) -> dict[str, Any]:
+        """One page of a directory under ``raw``, or of a name search below it.
+
+        Ready files are left out; the ready documents view lists them.
+        ``state`` keeps only files in that state (``none`` for no state).
+        Directories come first in every sort. ``counts`` covers the whole
+        listing, before the state filter.
+        """
         root = raw_root()
         directory = _raw_path(path)
         if not directory.is_dir():
             raise FileNotFoundError(f"Directory not found: raw/{path}")
+        if sort not in _SORT_KEYS:
+            raise ValueError(f"Unknown sort: {sort!r}")
 
         needle = query.strip().lower()
-        truncated = False
-        if needle:
-            children = []
-            for child in sorted(directory.rglob("*")):
-                if _hidden(child, root) or needle not in child.name.lower():
-                    continue
-                if len(children) == _SEARCH_LIMIT:
-                    truncated = True
-                    break
-                children.append(child)
-        else:
-            children = [child for child in directory.iterdir() if not _hidden(child, root)]
-
-        entries = [_entry(child, root) for child in children]
+        children = directory.rglob("*") if needle else directory.iterdir()
+        entries = [
+            _entry(child, root)
+            for child in children
+            if not _hidden(child, root) and needle in child.name.lower()
+        ]
         self._attach_states(entries)
-        entries.sort(key=lambda e: (e["kind"] != "dir", e["path"].lower()))
+        entries = [entry for entry in entries if entry.get("state") != "ready"]
+
+        files = [entry for entry in entries if entry["kind"] == "file"]
+        counts = {"all": len(files)}
+        for entry in files:
+            key = entry["state"] or "none"
+            counts[key] = counts.get(key, 0) + 1
+
+        if state != "all":
+            entries = [entry for entry in files if (entry["state"] or "none") == state]
+        # Name breaks ties, then directories move ahead of files.
+        entries.sort(key=_SORT_KEYS["name"])
+        entries.sort(key=_SORT_KEYS[sort], reverse=descending)
+        entries.sort(key=lambda entry: entry["kind"] != "dir")
+
+        entries, paging = paginate(entries, page, page_size)
         return {
             "path": _relative(directory, root),
             "entries": entries,
-            "truncated": truncated,
+            "counts": counts,
+            **paging,
         }
 
     def raw_file_path(self, path: str) -> Path:
@@ -163,8 +197,18 @@ class LibraryService:
     # Ready documents
     # ------------------------------------------------------------------
 
-    def ready_documents(self, project: str) -> list[dict[str, Any]]:
-        """Published, indexed documents in one project."""
+    def ready_documents(
+        self,
+        project: str,
+        query: str = "",
+        page: int = 1,
+        page_size: int = PAGE_SIZE,
+    ) -> dict[str, Any]:
+        """One page of the published, indexed documents in a project.
+
+        ``query`` matches the file name or type. ``totals`` covers every ready
+        document in the project, before the search.
+        """
         project = component(project, "project")
         metadata = {row["filename"]: row for row in list_project_file_metadata(project)}
         documents = []
@@ -181,8 +225,22 @@ class LibraryService:
                     "chunk_count": _chunk_count(project, row["filename"]),
                 }
             )
+        totals = {
+            "documents": len(documents),
+            "chunks": sum(d["chunk_count"] or 0 for d in documents),
+            "tokens": sum(max(0, d["token_num"]) for d in documents),
+        }
+
+        needle = query.strip().lower()
+        if needle:
+            documents = [
+                d
+                for d in documents
+                if needle in d["filename"].lower() or needle in (d["mime_type"] or "")
+            ]
         documents.sort(key=lambda d: d["filename"].lower())
-        return documents
+        documents, paging = paginate(documents, page, page_size)
+        return {"documents": documents, "totals": totals, **paging}
 
     def document(self, project: str, filename: str) -> dict[str, Any]:
         """A published document: its review row and the markdown it was indexed from."""

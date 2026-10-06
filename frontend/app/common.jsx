@@ -13,6 +13,9 @@ const API_BASE = configured(
   window.APP_CONFIG && window.APP_CONFIG.apiBase,
   window.location.protocol !== "file:" ? window.location.origin : "http://localhost:8003"
 );
+/** Rows per page in every list. The API allows at most 100. */
+const PAGE_SIZE = 100;
+
 const SUPERVISOR_BASE = configured(
   window.APP_CONFIG && window.APP_CONFIG.supervisorBase,
   "http://localhost:8002"
@@ -348,4 +351,80 @@ function usePolling(fn, ms, active) {
     }, ms);
     return () => window.clearInterval(id);
   }, [ms, active]);
+}
+
+function useDebounced(value, ms) {
+  const [debounced, setDebounced] = useState(value);
+  useEffect(() => {
+    const id = window.setTimeout(() => setDebounced(value), ms);
+    return () => window.clearTimeout(id);
+  }, [value, ms]);
+  return debounced;
+}
+
+/**
+ * The page of a list. Any change to ``listKey`` (search, filter, sort, folder)
+ * starts again at page 1. Changing pages scrolls back to the top.
+ */
+function usePage(listKey) {
+  const [state, setState] = useState({ key: listKey, page: 1 });
+  const page = state.key === listKey ? state.page : 1;
+  const goPage = (n) => {
+    setState({ key: listKey, page: n });
+    document.querySelector("main")?.scrollTo({ top: 0 });
+  };
+  return [page, goPage];
+}
+
+/** Page numbers to show: the first, the last, and two either side of the current one. */
+function pageWindow(page, pages) {
+  const shown = new Set([1, pages]);
+  for (let n = page - 2; n <= page + 2; n += 1) if (n >= 1 && n <= pages) shown.add(n);
+  const sorted = [...shown].sort((a, b) => a - b);
+  const items = [];
+  sorted.forEach((n, i) => {
+    if (i > 0 && n - sorted[i - 1] > 1) items.push(`gap-${n}`);
+    items.push(n);
+  });
+  return items;
+}
+
+function Pagination({ page, pageSize, total, onPage }) {
+  const pages = Math.max(1, Math.ceil(total / pageSize));
+  const first = total === 0 ? 0 : (page - 1) * pageSize + 1;
+  const last = Math.min(page * pageSize, total);
+  const button = "min-w-[2rem] h-8 px-2 rounded-lg text-xs font-semibold border transition-colors disabled:opacity-40 disabled:cursor-not-allowed";
+  return (
+    <div className="flex items-center justify-between flex-wrap gap-3 mt-4">
+      <span className="text-xs text-slate-500 tabular-nums">
+        {formatCount(first)}–{formatCount(last)} of {formatCount(total)}
+      </span>
+      {pages > 1 && (
+        <nav className="flex items-center gap-1" aria-label="Pages">
+          <button className={`${button} bg-white border-slate-200 text-slate-600 hover:bg-slate-50`} disabled={page === 1} onClick={() => onPage(page - 1)} aria-label="Previous page">
+            ‹
+          </button>
+          {pageWindow(page, pages).map((n) =>
+            typeof n === "string" ? (
+              <span key={n} className="px-1 text-xs text-slate-400">…</span>
+            ) : (
+              <button
+                key={n}
+                onClick={() => onPage(n)}
+                aria-current={n === page ? "page" : undefined}
+                className={`${button} tabular-nums ${
+                  n === page ? "bg-slate-800 border-slate-800 text-white" : "bg-white border-slate-200 text-slate-600 hover:bg-slate-50"
+                }`}
+              >
+                {n}
+              </button>
+            )
+          )}
+          <button className={`${button} bg-white border-slate-200 text-slate-600 hover:bg-slate-50`} disabled={page === pages} onClick={() => onPage(page + 1)} aria-label="Next page">
+            ›
+          </button>
+        </nav>
+      )}
+    </div>
+  );
 }

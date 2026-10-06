@@ -30,14 +30,10 @@
 
   // ── List ────────────────────────────────────────────────────────────────
 
-  function ReadyList({ project, docs, loading, error, notice, onDismissError, onDismissNotice, onRefresh, onOpen }) {
-    const [query, setQuery] = useState("");
-    const shown = useMemo(() => {
-      const q = query.trim().toLowerCase();
-      return q ? docs.filter((d) => `${d.filename} ${d.mime_type || ""}`.toLowerCase().includes(q)) : docs;
-    }, [docs, query]);
-    const totalChunks = docs.reduce((n, d) => n + (d.chunk_count || 0), 0);
-    const totalTokens = docs.reduce((n, d) => n + Math.max(0, d.token_num || 0), 0);
+  function ReadyList({ project, listing, query, onQuery, onPage, loading, error, notice, onDismissError, onDismissNotice, onRefresh, onOpen }) {
+    const docs = listing ? listing.documents : [];
+    const totals = listing ? listing.totals : null;
+    const searching = Boolean(query.trim());
 
     return (
       <Card>
@@ -54,27 +50,27 @@
           <Alert type="success" msg={notice} onClose={onDismissNotice} />
           <Alert type="error" msg={error} onClose={onDismissError} />
 
-          {docs.length > 0 && (
+          {totals && totals.documents > 0 && (
             <>
               <div className="grid grid-cols-3 gap-3 mb-5">
-                <Stat label="Documents" value={formatCount(docs.length)} />
-                <Stat label="Chunks" value={formatCount(totalChunks)} />
-                <Stat label="Reviewed tokens" value={formatCount(totalTokens)} />
+                <Stat label="Documents" value={formatCount(totals.documents)} />
+                <Stat label="Chunks" value={formatCount(totals.chunks)} />
+                <Stat label="Reviewed tokens" value={formatCount(totals.tokens)} />
               </div>
               <div className="flex mb-4">
-                <SearchInput value={query} onChange={setQuery} placeholder="Filter by file name or type" />
+                <SearchInput value={query} onChange={onQuery} placeholder="Search by file name or type" />
               </div>
             </>
           )}
 
-          {loading && docs.length === 0 ? (
+          {loading && !listing ? (
             <div className="py-16 flex justify-center"><Spinner size={32} /></div>
-          ) : shown.length === 0 ? (
-            <EmptyState icon={docs.length ? "🔎" : "📭"} title={docs.length ? "No documents match that filter." : "No documents are ready yet."}>
-              {!docs.length && "Documents appear here after review, publish, and indexing finish."}
+          ) : docs.length === 0 ? (
+            <EmptyState icon={searching ? "🔎" : "📭"} title={searching ? "No documents match that search." : "No documents are ready yet."}>
+              {!searching && "Documents appear here after review, publish, and indexing finish."}
             </EmptyState>
           ) : (
-            <div className="overflow-x-auto border border-slate-200 rounded-xl">
+            <div className={`overflow-x-auto border border-slate-200 rounded-xl transition-opacity ${loading ? "opacity-60" : ""}`}>
               <table className="w-full text-sm">
                 <thead className="bg-slate-50 text-left text-[11px] uppercase tracking-wide text-slate-500">
                   <tr>
@@ -88,7 +84,7 @@
                   </tr>
                 </thead>
                 <tbody>
-                  {shown.map((doc) => (
+                  {docs.map((doc) => (
                     <tr
                       key={doc.filename}
                       role="button"
@@ -111,6 +107,10 @@
                 </tbody>
               </table>
             </div>
+          )}
+
+          {listing && listing.total > 0 && (
+            <Pagination page={listing.page} pageSize={listing.page_size} total={listing.total} onPage={onPage} />
           )}
         </div>
       </Card>
@@ -400,30 +400,38 @@
   // ── Page ────────────────────────────────────────────────────────────────
 
   function ReadyPage({ project, file, onFileChange }) {
-    const [docs, setDocs] = useState([]);
+    const [listing, setListing] = useState(null);
+    const [query, setQuery] = useState("");
+    const debouncedQuery = useDebounced(query.trim(), 300);
+    const [page, goPage] = usePage([project, debouncedQuery].join("\n"));
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState("");
     const [notice, setNotice] = useState("");
+    const requestId = useRef(0);
 
     const load = useCallback(async () => {
       if (!project) return;
+      const id = ++requestId.current;
       setLoading(true);
       try {
-        const data = await api("GET", "/documents", { project });
-        setDocs(Array.isArray(data) ? data : []);
+        const data = await api("GET", "/documents", { project, q: debouncedQuery, page, page_size: PAGE_SIZE });
+        if (id !== requestId.current) return;
+        setListing(data);
         setError("");
       } catch (e) {
-        setError(e.message);
+        if (id === requestId.current) setError(e.message);
       } finally {
-        setLoading(false);
+        if (id === requestId.current) setLoading(false);
       }
-    }, [project]);
+    }, [project, debouncedQuery, page]);
+
+    useEffect(() => { load(); }, [load]);
 
     useEffect(() => {
-      setDocs([]);
+      setListing(null);
+      setQuery("");
       setNotice("");
-      load();
-    }, [load]);
+    }, [project]);
 
     if (!project) return <NeedProject what="ready documents" />;
 
@@ -446,7 +454,10 @@
     return (
       <ReadyList
         project={project}
-        docs={docs}
+        listing={listing}
+        query={query}
+        onQuery={setQuery}
+        onPage={goPage}
         loading={loading}
         error={error}
         notice={notice}

@@ -9,19 +9,7 @@
     { key: "failed", label: "Failed" },
     { key: "reviewing", label: "Reviewing" },
     { key: "indexing", label: "Indexing" },
-    { key: "ready", label: "Ready" },
   ];
-  // Files with no state sort first.
-  const STATE_ORDER = { failed: 1, extracting: 2, reviewing: 3, indexing: 4, ready: 5 };
-
-  function useDebounced(value, ms) {
-    const [debounced, setDebounced] = useState(value);
-    useEffect(() => {
-      const id = window.setTimeout(() => setDebounced(value), ms);
-      return () => window.clearTimeout(id);
-    }, [value, ms]);
-    return debounced;
-  }
 
   function firstSegment(path) {
     return (path || "").split("/").filter(Boolean)[0] || null;
@@ -72,19 +60,6 @@
     );
   }
 
-  function compareEntries(a, b, sort) {
-    if (a.kind !== b.kind) return a.kind === "dir" ? -1 : 1;
-    let cmp = 0;
-    switch (sort.key) {
-      case "size": cmp = (a.size || 0) - (b.size || 0); break;
-      case "modified": cmp = new Date(a.modified) - new Date(b.modified); break;
-      case "type": cmp = String(a.mime_type || "").localeCompare(String(b.mime_type || "")); break;
-      case "state": cmp = (STATE_ORDER[a.state] || 0) - (STATE_ORDER[b.state] || 0); break;
-      default: cmp = a.path.toLowerCase().localeCompare(b.path.toLowerCase());
-    }
-    return sort.dir === "asc" ? cmp : -cmp;
-  }
-
   function FilesPage({ project, onProjectChange, onOpen }) {
     const [path, setPath] = useState(project || "");
     const [query, setQuery] = useState("");
@@ -92,12 +67,14 @@
     const [stateFilter, setStateFilter] = useState("all");
     const [sort, setSort] = useState({ key: "name", dir: "asc" });
     const [listing, setListing] = useState(null);
-    const [selected, setSelected] = useState(() => new Set());
+    // path -> { project, filename }. Kept across pages.
+    const [selected, setSelected] = useState(() => new Map());
     const [loading, setLoading] = useState(false);
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState("");
     const [notice, setNotice] = useState("");
     const requestId = useRef(0);
+    const [page, goPage] = usePage([path, debouncedQuery, stateFilter, sort.key, sort.dir].join("\n"));
 
     // The header project and the browsed project follow each other.
     useEffect(() => {
@@ -107,7 +84,7 @@
     const navigate = (target) => {
       setPath(target);
       setQuery("");
-      setSelected(new Set());
+      setSelected(new Map());
       const seg = firstSegment(target);
       if (seg && seg !== project) onProjectChange(seg);
     };
@@ -116,15 +93,25 @@
       const id = ++requestId.current;
       if (!quiet) setLoading(true);
       try {
-        const data = await api("GET", "/files", { path, q: debouncedQuery });
+        const data = await api("GET", "/files", {
+          path,
+          q: debouncedQuery,
+          state: stateFilter,
+          sort: sort.key,
+          order: sort.dir,
+          page,
+          page_size: PAGE_SIZE,
+        });
         if (id !== requestId.current) return;
         setListing(data);
         setError("");
-        // Drop selections that can no longer be extracted.
+        // Drop selections on this page that can no longer be extracted.
         setSelected((prev) => {
-          const allowed = new Set(data.entries.filter((e) => e.extractable).map((e) => e.path));
-          const next = new Set([...prev].filter((p) => allowed.has(p)));
-          return next.size === prev.size ? prev : next;
+          const stale = data.entries.filter((e) => !e.extractable && prev.has(e.path));
+          if (stale.length === 0) return prev;
+          const next = new Map(prev);
+          stale.forEach((e) => next.delete(e.path));
+          return next;
         });
       } catch (e) {
         if (id !== requestId.current) return;
@@ -133,49 +120,32 @@
       } finally {
         if (id === requestId.current && !quiet) setLoading(false);
       }
-    }, [path, debouncedQuery]);
+    }, [path, debouncedQuery, stateFilter, sort, page]);
 
     useEffect(() => { load(false); }, [load]);
 
     const entries = listing ? listing.entries : [];
-    const files = entries.filter((e) => e.kind === "file");
-    const live = files.some((e) => e.state === "extracting" || e.state === "indexing");
+    const counts = listing ? listing.counts : {};
+    const live = Boolean(counts.extracting || counts.indexing);
     usePolling(() => load(true), POLL_MS, live);
 
-    const counts = useMemo(() => {
-      const c = { all: files.length, none: 0 };
-      for (const f of files) {
-        const key = f.state || "none";
-        c[key] = (c[key] || 0) + 1;
-      }
-      return c;
-    }, [listing]); // eslint-disable-line
-
-    const shown = useMemo(() => {
-      const rows = entries.filter((e) => {
-        if (stateFilter === "all") return true;
-        if (e.kind === "dir") return false;
-        return stateFilter === "none" ? !e.state : e.state === stateFilter;
-      });
-      return rows.sort((a, b) => compareEntries(a, b, sort));
-    }, [listing, stateFilter, sort]); // eslint-disable-line
-
-    const selectable = shown.filter((e) => e.extractable);
+    const selectable = entries.filter((e) => e.extractable);
     const allSelected = selectable.length > 0 && selectable.every((e) => selected.has(e.path));
 
     const toggle = (entry) => {
       setSelected((prev) => {
-        const next = new Set(prev);
-        if (next.has(entry.path)) next.delete(entry.path); else next.add(entry.path);
+        const next = new Map(prev);
+        if (next.has(entry.path)) next.delete(entry.path);
+        else next.set(entry.path, { project: entry.project, filename: entry.name });
         return next;
       });
     };
 
     const toggleAll = () => {
       setSelected((prev) => {
-        const next = new Set(prev);
+        const next = new Map(prev);
         if (allSelected) selectable.forEach((e) => next.delete(e.path));
-        else selectable.forEach((e) => next.add(e.path));
+        else selectable.forEach((e) => next.set(e.path, { project: e.project, filename: e.name }));
         return next;
       });
     };
@@ -185,15 +155,12 @@
     };
 
     const extract = async () => {
-      const chosen = entries.filter((e) => selected.has(e.path));
-      if (chosen.length === 0) return;
+      if (selected.size === 0) return;
       setBusy(true);
       setError("");
       setNotice("");
       try {
-        const results = await api("POST", "/extractions", null, {
-          files: chosen.map((e) => ({ project: e.project, filename: e.name })),
-        });
+        const results = await api("POST", "/extractions", null, { files: [...selected.values()] });
         const queued = results.filter((r) => r.queued);
         const skipped = results.filter((r) => !r.queued);
         if (queued.length) {
@@ -202,7 +169,7 @@
         if (skipped.length) {
           setError(skipped.map((r) => `${r.project}/${r.filename}: ${r.reason}`).join("\n"));
         }
-        setSelected(new Set());
+        setSelected(new Map());
         await load(true);
       } catch (e) {
         setError(e.message);
@@ -212,6 +179,7 @@
     };
 
     const searching = Boolean(debouncedQuery);
+    const currentPage = listing ? listing.page : page;
 
     return (
       <Card>
@@ -250,7 +218,7 @@
                   }`}
                 >
                   {f.label}
-                  <span className={`ml-1.5 ${active ? "text-slate-300" : "text-slate-400"}`}>{n}</span>
+                  <span className={`ml-1.5 ${active ? "text-slate-300" : "text-slate-400"}`}>{formatCount(n)}</span>
                 </button>
               );
             })}
@@ -260,7 +228,7 @@
             <div className="sticky top-2 z-[5] mb-4 px-4 py-3 rounded-xl bg-blue-600 text-white flex items-center justify-between gap-3 shadow-lg shadow-blue-200 fade-up">
               <span className="text-sm font-semibold">{plural(selected.size, "file")} selected</span>
               <div className="flex items-center gap-2">
-                <button onClick={() => setSelected(new Set())} className="px-3 py-1.5 text-xs font-semibold rounded-lg hover:bg-blue-500">
+                <button onClick={() => setSelected(new Map())} className="px-3 py-1.5 text-xs font-semibold rounded-lg hover:bg-blue-500">
                   Clear
                 </button>
                 <button
@@ -277,19 +245,19 @@
 
           {loading && !listing ? (
             <div className="py-16 flex justify-center"><Spinner size={32} /></div>
-          ) : shown.length === 0 ? (
-            <EmptyState icon={searching ? "🔎" : "📂"} title={searching ? "No files match that search." : entries.length ? "No files in this state." : "This folder is empty."}>
+          ) : entries.length === 0 ? (
+            <EmptyState icon={searching ? "🔎" : "📂"} title={searching ? "No files match that search." : counts.all ? "No files in this state." : "This folder is empty."}>
               {!searching && !path && "Put files under store/s3/raw/{project}/ to see them here."}
             </EmptyState>
           ) : (
-            <div className="overflow-x-auto border border-slate-200 rounded-xl">
+            <div className={`overflow-x-auto border border-slate-200 rounded-xl transition-opacity ${loading ? "opacity-60" : ""}`}>
               <table className="w-full text-sm">
                 <thead className="bg-slate-50 text-left text-[11px] text-slate-500">
                   <tr>
                     <th className="pl-4 pr-1 py-3 w-8">
                       <input
                         type="checkbox"
-                        aria-label="Select all files that can be extracted"
+                        aria-label="Select every file on this page that can be extracted"
                         checked={allSelected}
                         disabled={selectable.length === 0}
                         onChange={toggleAll}
@@ -304,7 +272,7 @@
                   </tr>
                 </thead>
                 <tbody>
-                  {!searching && path && stateFilter === "all" && (
+                  {!searching && path && stateFilter === "all" && currentPage === 1 && (
                     <tr className="border-t border-slate-100 hover:bg-slate-50 cursor-pointer" onClick={() => navigate(parentOf(path))}>
                       <td />
                       <td className="px-4 py-2.5 text-slate-500" colSpan={5}>
@@ -312,7 +280,7 @@
                       </td>
                     </tr>
                   )}
-                  {shown.map((entry) => (
+                  {entries.map((entry) => (
                     <FileRow
                       key={entry.path}
                       entry={entry}
@@ -328,9 +296,14 @@
             </div>
           )}
 
+          {listing && listing.total > 0 && (
+            <Pagination page={listing.page} pageSize={listing.page_size} total={listing.total} onPage={goPage} />
+          )}
+
           <p className="text-xs text-slate-400 mt-3 leading-relaxed">
-            {listing && listing.truncated && <span className="text-amber-600 font-semibold">Showing the first 1,000 matches. Narrow the search to see more. </span>}
             Files at <span className="font-mono">raw/&#123;project&#125;/&#123;file&#125;</span> with no state, or whose extraction failed, can be selected for extraction.
+            Selections are kept when you change pages.
+            Ready files are listed on the Ready page.
             Supported types: PDF, images (JPG, PNG), and Office documents.
           </p>
         </div>
@@ -341,11 +314,8 @@
   function FileRow({ entry, searching, checked, onToggle, onNavigate, onOpen }) {
     const isDir = entry.kind === "dir";
     const parent = parentOf(entry.path);
-    const openState = () => {
-      if (entry.state === "reviewing") onOpen("review", entry.project, entry.name);
-      if (entry.state === "ready") onOpen("ready", entry.project, entry.name);
-    };
-    const linked = entry.state === "reviewing" || entry.state === "ready";
+    const openState = () => onOpen("review", entry.project, entry.name);
+    const linked = entry.state === "reviewing";
 
     return (
       <tr
@@ -392,7 +362,7 @@
         <td className="px-4 py-2.5">
           {!isDir && (
             linked ? (
-              <button onClick={openState} title={entry.state === "reviewing" ? "Open the review" : "Open the document"}>
+              <button onClick={openState} title="Open the review">
                 <StateBadge state={entry.state} />
               </button>
             ) : (

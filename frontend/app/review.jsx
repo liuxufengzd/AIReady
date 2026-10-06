@@ -17,23 +17,17 @@
     return url.toString();
   }
 
-  function needsReview(row) {
-    return row.approved === null || row.approved === undefined;
-  }
-
-  function PendingList({ project, rows, onOpen, notice, error, onDismissError, onDismissNotice, onRefresh, loading }) {
-    const [query, setQuery] = useState("");
-    const shown = useMemo(() => {
-      const q = query.trim().toLowerCase();
-      return q ? rows.filter((row) => `${row.filename} ${row.engine}`.toLowerCase().includes(q)) : rows;
-    }, [rows, query]);
+  function PendingList({ project, listing, query, onQuery, onPage, onOpen, notice, error, onDismissError, onDismissNotice, onRefresh, loading }) {
+    const rows = listing ? listing.rows : [];
+    const total = listing ? listing.total : 0;
+    const searching = Boolean(query.trim());
 
     return (
       <Card>
         <CardHeader
           icon="📝"
           title="Waiting for review"
-          subtitle={<span><span className="font-mono">{project}</span> · {plural(rows.length, "file")} to review</span>}
+          subtitle={<span><span className="font-mono">{project}</span>{listing && !searching && <> · {plural(total, "file")} to review</>}</span>}
           tone="from-amber-50 to-orange-50"
         >
           <Button onClick={onRefresh} disabled={loading}>Refresh</Button>
@@ -43,20 +37,20 @@
           <Alert type="success" msg={notice} onClose={onDismissNotice} />
           <Alert type="error" msg={error} onClose={onDismissError} />
 
-          {rows.length > 0 && (
+          {(total > 0 || searching) && (
             <div className="flex mb-4">
-              <SearchInput value={query} onChange={setQuery} placeholder="Filter by file name or engine" />
+              <SearchInput value={query} onChange={onQuery} placeholder="Search by file name or engine" />
             </div>
           )}
 
-          {loading && rows.length === 0 ? (
+          {loading && !listing ? (
             <div className="py-16 flex justify-center"><Spinner size={32} /></div>
-          ) : shown.length === 0 ? (
-            <EmptyState icon={rows.length ? "🔎" : "✅"} title={rows.length ? "No files match that filter." : "Nothing is waiting for review."}>
-              {!rows.length && "Extracted files appear here once dataprep has parsed them."}
+          ) : rows.length === 0 ? (
+            <EmptyState icon={searching ? "🔎" : "✅"} title={searching ? "No files match that search." : "Nothing is waiting for review."}>
+              {!searching && "Extracted files appear here once dataprep has parsed them."}
             </EmptyState>
           ) : (
-            <div className="overflow-x-auto border border-slate-200 rounded-xl">
+            <div className={`overflow-x-auto border border-slate-200 rounded-xl transition-opacity ${loading ? "opacity-60" : ""}`}>
               <table className="w-full text-sm">
                 <thead className="bg-slate-50 text-left text-[11px] uppercase tracking-wide text-slate-500">
                   <tr>
@@ -68,7 +62,7 @@
                   </tr>
                 </thead>
                 <tbody>
-                  {shown.map((row) => (
+                  {rows.map((row) => (
                     <tr
                       key={`${row.filename}/${row.engine}`}
                       role="button"
@@ -89,6 +83,10 @@
                 </tbody>
               </table>
             </div>
+          )}
+
+          {listing && total > 0 && (
+            <Pagination page={listing.page} pageSize={listing.page_size} total={total} onPage={onPage} />
           )}
         </div>
       </Card>
@@ -294,54 +292,74 @@
   }
 
   function ReviewPage({ project, file, onFileChange }) {
-    const [rows, setRows] = useState([]);
+    const [listing, setListing] = useState(null);
+    const [query, setQuery] = useState("");
+    const debouncedQuery = useDebounced(query.trim(), 300);
+    const [page, goPage] = usePage([project, debouncedQuery].join("\n"));
     const [review, setReview] = useState(null);
     const [loading, setLoading] = useState(false);
     const [overlay, setOverlay] = useState("");
     const [error, setError] = useState("");
     const [notice, setNotice] = useState("");
+    const requestId = useRef(0);
 
     const loadRows = useCallback(async () => {
-      if (!project) return [];
+      if (!project) return;
+      const id = ++requestId.current;
       setLoading(true);
       try {
-        const data = await api("GET", "/reviews", { project });
-        const pending = (Array.isArray(data) ? data : []).filter(needsReview);
-        setRows(pending);
+        const data = await api("GET", "/reviews", {
+          project, pending: true, q: debouncedQuery, page, page_size: PAGE_SIZE,
+        });
+        if (id !== requestId.current) return;
+        setListing(data);
         setError("");
-        return pending;
       } catch (e) {
-        setError(e.message);
-        return [];
+        if (id === requestId.current) setError(e.message);
       } finally {
-        setLoading(false);
+        if (id === requestId.current) setLoading(false);
       }
+    }, [project, debouncedQuery, page]);
+
+    useEffect(() => { loadRows(); }, [loadRows]);
+
+    useEffect(() => {
+      setListing(null);
+      setQuery("");
+      setNotice("");
     }, [project]);
 
+    // The file in the URL is the open review. Its row may be on another page,
+    // so look it up by name when it is not on this one.
     useEffect(() => {
-      setRows([]);
-      setNotice("");
-      loadRows();
-    }, [loadRows]);
-
-    // The file in the URL is the open review. Load it once its row is listed.
-    useEffect(() => {
-      const row = file && rows.find((r) => r.filename === file);
-      if (!row) {
+      if (!file) {
         setReview(null);
         return undefined;
       }
       if (review && review.filename === file) return undefined;
       let cancelled = false;
-      setOverlay("Opening review…");
-      setError("");
-      setNotice("");
-      api("GET", reviewPath(row), { engine: row.engine })
-        .then((detail) => { if (!cancelled) setReview(detail); })
-        .catch((e) => { if (!cancelled) { setError(e.message); onFileChange(null); } })
-        .finally(() => setOverlay(""));
+      const open = async () => {
+        setOverlay("Opening review…");
+        setError("");
+        setNotice("");
+        try {
+          let row = listing && listing.rows.find((r) => r.filename === file);
+          if (!row) {
+            const found = await api("GET", "/reviews", { project, pending: true, q: file, page_size: PAGE_SIZE });
+            row = found.rows.find((r) => r.filename === file);
+          }
+          if (!row) throw new Error(`${file} is not waiting for review.`);
+          const detail = await api("GET", reviewPath(row), { engine: row.engine });
+          if (!cancelled) setReview(detail);
+        } catch (e) {
+          if (!cancelled) { setError(e.message); onFileChange(null); }
+        } finally {
+          setOverlay("");
+        }
+      };
+      open();
       return () => { cancelled = true; };
-    }, [file, rows]); // eslint-disable-line
+    }, [file, project]); // eslint-disable-line
 
     const back = () => onFileChange(null);
 
@@ -379,7 +397,10 @@
         ) : (
           <PendingList
             project={project}
-            rows={rows}
+            listing={listing}
+            query={query}
+            onQuery={setQuery}
+            onPage={goPage}
             onOpen={(row) => onFileChange(row.filename)}
             notice={notice}
             error={error}

@@ -4,13 +4,18 @@ GET  /                         The frontend (files, review, ready, assistant).
 GET  /projects                 Projects with raw files or pipeline records.
 
 Raw files
-GET  /files?path=&q=           One directory under store/s3/raw, or a name search
-                               below it. Files carry their pipeline state.
+GET  /files?path=&q=&state=&sort=&order=&page=&page_size=
+                               One page (up to 100) of a directory under
+                               store/s3/raw, or of a name search below it.
+                               Files carry their pipeline state; ready files
+                               are left out.
 GET  /files/raw/{path}         The raw file itself.
 POST /extractions              Queue raw files that have no state, or failed.
 
 Review
-GET  /reviews?project=         Review rows, optionally for one project.
+GET  /reviews?project=&pending=&q=&page=&page_size=
+                               One page of review rows, optionally for one
+                               project or only the undecided ones.
 GET  /reviews/{project}/{filename}?engine=
                                Markdown for a file that has not been reviewed.
 GET  /reviews/{project}/{filename}/layout?engine=
@@ -23,7 +28,9 @@ POST /reviews/{project}/{filename}?engine=
                                token_num, approved, and require_chunking.
 
 Ready documents
-GET    /documents?project=     Published, indexed documents of a project.
+GET    /documents?project=&q=&page=&page_size=
+                               One page of the published, indexed documents
+                               of a project.
 GET    /documents/{project}/{filename}
                                The reviewed markdown of one document.
 GET    /documents/{project}/{filename}/chunks
@@ -41,8 +48,9 @@ import os
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
+from typing import Annotated, Literal
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -50,6 +58,7 @@ from pydantic import BaseModel, Field
 
 from data_management.dao import close as close_db
 from data_management.library import LibraryService, SearchIndexError
+from data_management.paging import PAGE_SIZE
 from data_management.service import Conflict, ReviewService, TokenCountError
 from data_management.store import LAYOUT_NAME
 
@@ -109,6 +118,16 @@ for _error, _status in _ERROR_STATUS.items():
 # ---------------------------------------------------------------------------
 
 
+class Page(BaseModel):
+    total: int = Field(description="Items across all pages, after any filter.")
+    page: int
+    page_size: int
+
+
+PageNumber = Annotated[int, Query(ge=1)]
+PageSize = Annotated[int, Query(ge=1, le=PAGE_SIZE)]
+
+
 class ReviewRow(BaseModel):
     project: str
     filename: str
@@ -118,6 +137,10 @@ class ReviewRow(BaseModel):
     require_chunking: bool
     processed: bool
     create_time: datetime
+
+
+class ReviewList(Page):
+    rows: list[ReviewRow]
 
 
 class ReviewDetail(ReviewRow):
@@ -156,10 +179,12 @@ class FileEntry(BaseModel):
     extractable: bool = False
 
 
-class FileListing(BaseModel):
+class FileListing(Page):
     path: str
-    entries: list[FileEntry]
-    truncated: bool
+    entries: list[FileEntry] = Field(description="One page, directories first.")
+    counts: dict[str, int] = Field(
+        description="Files per state before the state filter: 'all', 'none', and each state."
+    )
 
 
 class FileRef(BaseModel):
@@ -192,6 +217,17 @@ class ReadyDocument(DocumentRow):
     mime_type: str | None
     size: int | None
     chunk_count: int | None
+
+
+class ReadyTotals(BaseModel):
+    documents: int
+    chunks: int
+    tokens: int
+
+
+class ReadyList(Page):
+    documents: list[ReadyDocument]
+    totals: ReadyTotals = Field(description="Every ready document of the project, before the search.")
 
 
 class DocumentDetail(DocumentRow):
@@ -266,9 +302,20 @@ def list_projects() -> list[str]:
 
 
 @app.get("/files", response_model=FileListing)
-def browse_files(path: str = "", q: str = "") -> FileListing:
-    """One directory under raw, or every name below it that contains ``q``."""
-    return FileListing.model_validate(library.browse(path, q))
+def browse_files(
+    path: str = "",
+    q: str = "",
+    state: Literal["all", "none", "extracting", "failed", "reviewing", "indexing"] = "all",
+    sort: Literal["name", "type", "size", "modified", "state"] = "name",
+    order: Literal["asc", "desc"] = "asc",
+    page: PageNumber = 1,
+    page_size: PageSize = PAGE_SIZE,
+) -> FileListing:
+    """One page of a directory under raw, or of every name below it that
+    contains ``q``. Ready files are left out."""
+    return FileListing.model_validate(
+        library.browse(path, q, state, sort, order == "desc", page, page_size)
+    )
 
 
 @app.get("/files/raw/{path:path}")
@@ -290,10 +337,18 @@ def queue_extractions(body: ExtractionRequest) -> list[ExtractionResult]:
 # ---------------------------------------------------------------------------
 
 
-@app.get("/reviews", response_model=list[ReviewRow])
-def list_review_files(project: str | None = None) -> list[ReviewRow]:
-    """Every file in the review table, decided or not."""
-    return [ReviewRow.model_validate(row) for row in service.list_files(project)]
+@app.get("/reviews", response_model=ReviewList)
+def list_review_files(
+    project: str | None = None,
+    pending: bool | None = None,
+    q: str = "",
+    page: PageNumber = 1,
+    page_size: PageSize = PAGE_SIZE,
+) -> ReviewList:
+    """One page of the review table. ``pending=true`` keeps undecided rows."""
+    return ReviewList.model_validate(
+        service.list_files(project, pending, q, page, page_size)
+    )
 
 
 @app.get("/reviews/{project}/{filename}", response_model=ReviewDetail)
@@ -338,10 +393,17 @@ def submit_review(
 # ---------------------------------------------------------------------------
 
 
-@app.get("/documents", response_model=list[ReadyDocument])
-def list_ready_documents(project: str) -> list[ReadyDocument]:
-    """Documents of a project that are published and indexed."""
-    return [ReadyDocument.model_validate(row) for row in library.ready_documents(project)]
+@app.get("/documents", response_model=ReadyList)
+def list_ready_documents(
+    project: str,
+    q: str = "",
+    page: PageNumber = 1,
+    page_size: PageSize = PAGE_SIZE,
+) -> ReadyList:
+    """One page of the documents of a project that are published and indexed."""
+    return ReadyList.model_validate(
+        library.ready_documents(project, q, page, page_size)
+    )
 
 
 @app.get("/documents/{project}/{filename}", response_model=DocumentDetail)
