@@ -1,7 +1,11 @@
 """Extraction group: one raw file becomes a review-ready document.
 
-``raw_directory_sensor`` watches ``{store}/raw/{project}/`` and launches
-``extract_document``. Assets in the ``extraction`` group share
+The data management UI queues a raw file in ``extraction_request``.
+``extraction_request_sensor`` launches ``extract_document`` for each pending
+request. A failed or canceled run marks its request failed; a run that
+reaches review deletes the request.
+
+Assets in the ``extraction`` group share
 ``document_partitions`` and run in that job, in order:
 
 ``prepared_document`` -> ``mineru_artifact`` -> ``layout`` -> ``document_to_review``
@@ -20,6 +24,11 @@ import dagster as dg
 
 from dataprep.common.const import IMAGES_DIRNAME, MARKDOWN_NAME, SUPPORTED_FILE_TYPES
 from dataprep.common.utils import document_key, document_partitions, parse_document_key
+from dataprep.dao.extraction_request import (
+    delete_extraction_request,
+    list_pending_requests,
+    mark_request_failed,
+)
 from dataprep.dao.review import save_review
 from dataprep.resources.llm import LLM
 from dataprep.resources.image_extractor import ImageExtractor
@@ -28,8 +37,6 @@ from dataprep.resources.mineru_parser import MinerUParser
 from dataprep.resources.office_converter import OfficeConverter
 
 _RETRY = dg.RetryPolicy(max_retries=2)
-# S3 LastModified resolves to one second. The cursor is nanoseconds.
-_WATERMARK_LAG_NS = 1_000_000_000
 
 
 def _publish_parse_source(
@@ -146,6 +153,7 @@ async def document_to_review(
     project, filename = parse_document_key(context.partition_key)
     token_num = llm.client.get_num_tokens(text)
     save_review(project, filename, token_num, "mineru")
+    delete_extraction_request(project, filename)
 
     context.log.info("Images extracted successfully, waiting for human review")
     return dg.MaterializeResult(value=str(markdown))
@@ -162,32 +170,26 @@ extract_document = dg.define_asset_job(
     job=extract_document,
     minimum_interval_seconds=30,
     default_status=dg.DefaultSensorStatus.RUNNING,
-    description="Start extract_document when a supported file appears under a project's raw directory.",
+    description="Start extract_document for every pending extraction request.",
 )
-def raw_directory_sensor(
-    context: dg.SensorEvaluationContext, store: LocalDocStore
-) -> dg.SensorResult | dg.SkipReason:
-    last_mtime = int(context.cursor) if context.cursor else 0
-    max_mtime = last_mtime
+def extraction_request_sensor() -> dg.SensorResult | dg.SkipReason:
+    rows = list_pending_requests()
+    if not rows:
+        return dg.SkipReason("No extraction requests are pending.")
+
     partition_keys: list[str] = []
     run_requests: list[dg.RunRequest] = []
-
-    for project, filename, mtime_ns in store.iter_raw_files():
-        # One second behind the watermark. A repeat from that second has the same
-        # run_key, so Dagster does not start another run.
-        if mtime_ns <= last_mtime - _WATERMARK_LAG_NS:
-            continue
-
-        key = document_key(project, filename)
+    for row in rows:
+        key = document_key(row["project"], row["filename"])
         partition_keys.append(key)
+        # A request stays pending while its run is in progress. The run_key
+        # stops Dagster from launching it again on the next tick.
         run_requests.append(
-            dg.RunRequest(partition_key=key, run_key=f"{key}:{mtime_ns}")
+            dg.RunRequest(
+                partition_key=key,
+                run_key=f"{key}:{row['request_time'].isoformat()}",
+            )
         )
-        max_mtime = max(max_mtime, mtime_ns)
-
-    context.update_cursor(str(max_mtime))
-    if not run_requests:
-        return dg.SkipReason("No new files in project raw directories.")
 
     # Maximum of 25K partitions per sensor evaluation, as this is the maximum recommended partition limit per asset
     return dg.SensorResult(
@@ -196,3 +198,29 @@ def raw_directory_sensor(
             document_partitions.build_add_request(partition_keys)
         ],  # Register the required partitions to the dagster
     )
+
+
+def _fail_request(run: dg.DagsterRun, error: str | None) -> None:
+    key = run.tags.get("dagster/partition")
+    if key:
+        project, filename = parse_document_key(key)
+        mark_request_failed(project, filename, error)
+
+
+@dg.run_failure_sensor(
+    monitored_jobs=[extract_document],
+    default_status=dg.DefaultSensorStatus.RUNNING,
+    description="Mark the extraction request failed so it can be queued again.",
+)
+def extraction_failure_sensor(context: dg.RunFailureSensorContext) -> None:
+    _fail_request(context.dagster_run, context.failure_event.message)
+
+
+@dg.run_status_sensor(
+    run_status=dg.DagsterRunStatus.CANCELED,
+    monitored_jobs=[extract_document],
+    default_status=dg.DefaultSensorStatus.RUNNING,
+    description="Mark the extraction request failed when its run is canceled.",
+)
+def extraction_canceled_sensor(context: dg.RunStatusSensorContext) -> None:
+    _fail_request(context.dagster_run, "Run was canceled")

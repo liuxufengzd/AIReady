@@ -1,6 +1,4 @@
-"""List review-table files and record a human decision on one of them.
-We can add file CRUD operations in the future.
-"""
+"""List review-table files and record a human decision on one of them."""
 
 from datetime import datetime
 from pathlib import Path
@@ -10,47 +8,49 @@ from dotenv import load_dotenv
 from common.const import MARKDOWN_NAME, MUST_CHUNK_TOKEN_THRESHOLD
 from common.logger import get_logger
 from data_management.dao.review import (
-    close as close_db,
     get_review,
     list_reviews,
     record_review_decision,
 )
+from data_management.store import LAYOUT_NAME, asset_under, component, content_dir
 from common.util import get_llm
 
 logger = get_logger(__name__)
-
-_LAYOUT_NAME = "layout.pdf"
-_REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 load_dotenv(Path(__file__).parent / ".env")
 
 
-class ReviewConflict(Exception):
-    """The row can no longer take a decision."""
+class Conflict(Exception):
+    """The file's current state does not allow the operation."""
 
 
 class TokenCountError(Exception):
-    """The edited markdown could not be counted."""
+    """The text could not be counted."""
+
+
+_llm = None
+
+
+def count_tokens(text: str) -> int:
+    """Token count of ``text`` under the configured model."""
+    global _llm
+    if _llm is None:
+        _llm = get_llm()
+    return int(_llm.get_num_tokens(text))
 
 
 class ReviewService:
     """Review-table queries and the markdown those rows point at."""
 
-    def __init__(self) -> None:
-        self._llm = None
-
-    def close(self) -> None:
-        close_db()
-
-    def list_files(self) -> list[dict]:
-        return list_reviews()
+    def list_files(self, project: str | None = None) -> list[dict]:
+        return list_reviews(project)
 
     def open_review(self, project: str, filename: str, engine: str) -> dict:
         """Load one undecided row and the markdown waiting beside it."""
         project, filename, engine = _identity(project, filename, engine)
         row = self._pending_row(project, filename, engine)
-        directory = _content_dir(project, filename)
+        directory = content_dir(project, filename)
         markdown = directory / MARKDOWN_NAME
         if not markdown.is_file():
             raise FileNotFoundError(
@@ -60,14 +60,14 @@ class ReviewService:
         return {
             **_public_row(row),
             "content": markdown.read_text(encoding="utf-8"),
-            "has_layout": (directory / _LAYOUT_NAME).is_file(),
+            "has_layout": (directory / LAYOUT_NAME).is_file(),
             "ask_chunking": token_num <= MUST_CHUNK_TOKEN_THRESHOLD,
             "permit_reject": True,
         }
 
     def layout_file(self, project: str, filename: str, engine: str) -> Path:
         project, filename, engine = _identity(project, filename, engine)
-        path = _content_dir(project, filename) / _LAYOUT_NAME
+        path = content_dir(project, filename) / LAYOUT_NAME
         if not path.is_file():
             raise FileNotFoundError(f"Layout PDF not found for {project}/{filename}")
         return path
@@ -77,7 +77,7 @@ class ReviewService:
     ) -> Path:
         """A file next to the markdown, such as an extracted image."""
         project, filename, engine = _identity(project, filename, engine)
-        return _asset_under(_content_dir(project, filename), relative)
+        return asset_under(content_dir(project, filename), relative)
 
     def submit_review(
         self,
@@ -102,7 +102,7 @@ class ReviewService:
                 raise ValueError(
                     "Cannot approve empty content. Add text or reject the parse."
                 )
-            token_num = self._count_tokens(text)
+            token_num = _count_reviewed_tokens(text)
             chunking = bool(require_chunking) or token_num > MUST_CHUNK_TOKEN_THRESHOLD
         else:
             token_num = -1
@@ -110,7 +110,7 @@ class ReviewService:
             text = None
 
         if text is not None:
-            markdown = _content_dir(project, filename) / MARKDOWN_NAME
+            markdown = content_dir(project, filename) / MARKDOWN_NAME
             markdown.write_text(text, encoding="utf-8")
 
         updated = record_review_decision(
@@ -123,7 +123,7 @@ class ReviewService:
             row["create_time"],
         )
         if updated != 1:
-            raise ReviewConflict(
+            raise Conflict(
                 f"{project}/{filename} changed while it was being reviewed. Open it again."
             )
 
@@ -156,23 +156,23 @@ class ReviewService:
                 f"No review row for {project}/{filename} ({engine})"
             )
         if row["approved"] is not None:
-            raise ReviewConflict(f"{project}/{filename} has already been reviewed.")
+            raise Conflict(f"{project}/{filename} has already been reviewed.")
         if create_time is not None and row["create_time"] != create_time:
-            raise ReviewConflict(
+            raise Conflict(
                 f"{project}/{filename} was extracted again. Open the latest copy."
             )
         return row
 
-    def _count_tokens(self, text: str) -> int:
-        try:
-            if self._llm is None:
-                self._llm = get_llm()
-            return int(self._llm.get_num_tokens(text))
-        except Exception as exc:
-            logger.exception("Token count failed")
-            raise TokenCountError(
-                "Could not count tokens for the reviewed markdown."
-            ) from exc
+
+
+def _count_reviewed_tokens(text: str) -> int:
+    try:
+        return count_tokens(text)
+    except Exception as exc:
+        logger.exception("Token count failed")
+        raise TokenCountError(
+            "Could not count tokens for the reviewed markdown."
+        ) from exc
 
 
 def _public_row(row: dict) -> dict:
@@ -190,46 +190,7 @@ def _public_row(row: dict) -> dict:
 
 def _identity(project: str, filename: str, engine: str) -> tuple[str, str, str]:
     return (
-        _component(project, "project"),
-        _component(filename, "filename"),
-        _component(engine, "engine"),
+        component(project, "project"),
+        component(filename, "filename"),
+        component(engine, "engine"),
     )
-
-
-def _component(value: str, label: str) -> str:
-    """Reject names that would leave the document store."""
-    if not value or value in {".", ".."} or value != Path(value).name:
-        raise ValueError(f"Invalid {label}: {value!r}")
-    return value
-
-
-def _content_dir(project: str, filename: str) -> Path:
-    """Directory that currently holds the parse: tmp, or the published folder.
-
-    This matches the directory publish reads when it chunks an approved file.
-    """
-    published = _under("processed", project, filename)
-    working = published / "tmp"
-    if working.is_dir() and any(working.iterdir()):
-        return working
-    if published.is_dir():
-        return published
-    raise FileNotFoundError(f"No extraction output for {project}/{filename}")
-
-
-def _asset_under(directory: Path, relative: str) -> Path:
-    if not relative or relative.startswith(("/", "\\")):
-        raise FileNotFoundError(relative)
-    root = directory.resolve()
-    target = (root / relative).resolve()
-    if not target.is_relative_to(root) or not target.is_file():
-        raise FileNotFoundError(relative)
-    return target
-
-
-def _under(*parts: str) -> Path:
-    base = (_REPO_ROOT / "store" / "s3").resolve()
-    target = base.joinpath(*parts).resolve()
-    if not target.is_relative_to(base):
-        raise ValueError(f"Path escapes the document store: {target}")
-    return target

@@ -1,17 +1,9 @@
-"""Review rows this service lists and decides."""
+"""Review rows this service lists, decides, and clears."""
 
 from datetime import datetime
 from typing import Any
 
-from common.db import DBClient
-
-_db = DBClient()
-
-
-def close() -> None:
-    """Close this service's review connection pool."""
-    _db.close()
-
+from data_management.dao import db as _db
 
 _CREATE_REVIEW_TABLE = """
 CREATE TABLE IF NOT EXISTS review (
@@ -22,19 +14,29 @@ CREATE TABLE IF NOT EXISTS review (
     create_time TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     approved BOOLEAN,
     require_chunking BOOLEAN NOT NULL DEFAULT FALSE,
+    indexed BOOLEAN NOT NULL DEFAULT FALSE,
     processed BOOLEAN NOT NULL DEFAULT FALSE,
     PRIMARY KEY (project, filename, engine)
 )
 """
 
-_SELECT_ALL = """
-SELECT project, filename, token_num, engine, approved, require_chunking, processed, create_time
+_COLUMNS = """
+project, filename, token_num, engine, approved, require_chunking, processed, indexed, create_time
+"""
+
+_SELECT_ALL = f"""
+SELECT {_COLUMNS}
 FROM review
+WHERE %s::text IS NULL OR project = %s
 ORDER BY (approved IS NULL) DESC, create_time DESC, project, filename
 """
 
-_SELECT_BY_ENGINE = """
-SELECT project, filename, token_num, engine, approved, require_chunking, processed, create_time
+_SELECT_PROJECTS = """
+SELECT DISTINCT project FROM review
+"""
+
+_SELECT_BY_ENGINE = f"""
+SELECT {_COLUMNS}
 FROM review
 WHERE project = %s AND filename = %s AND engine = %s
 """
@@ -49,15 +51,25 @@ WHERE project = %s AND filename = %s AND engine = %s
   AND approved IS NULL
 """
 
+_DELETE_FILE = """
+DELETE FROM review
+WHERE project = %s AND filename = %s
+"""
+
 
 def _ensure_review_table() -> None:
     _db.execute(_CREATE_REVIEW_TABLE)
 
 
-def list_reviews() -> list[dict[str, Any]]:
-    """Every review row. Undecided rows come first."""
+def list_reviews(project: str | None = None) -> list[dict[str, Any]]:
+    """Every review row, or one project's. Undecided rows come first."""
     _ensure_review_table()
-    return _db.fetchall(_SELECT_ALL)
+    return _db.fetchall(_SELECT_ALL, (project, project))
+
+
+def list_review_projects() -> list[str]:
+    _ensure_review_table()
+    return [row["project"] for row in _db.fetchall(_SELECT_PROJECTS)]
 
 
 def get_review(project: str, filename: str, engine: str) -> dict[str, Any] | None:
@@ -94,3 +106,9 @@ def record_review_decision(
             create_time,
         ),
     )
+
+
+def delete_file_reviews(project: str, filename: str) -> None:
+    """Remove every engine's row for one file."""
+    _ensure_review_table()
+    _db.execute(_DELETE_FILE, (project, filename))

@@ -1,7 +1,16 @@
-"""Review files recorded in the review table.
+"""Data management API and the unified frontend.
 
-GET  /                         The review UI.
-GET  /reviews                  Every row in the review table.
+GET  /                         The frontend (files, review, ready, assistant).
+GET  /projects                 Projects with raw files or pipeline records.
+
+Raw files
+GET  /files?path=&q=           One directory under store/s3/raw, or a name search
+                               below it. Files carry their pipeline state.
+GET  /files/raw/{path}         The raw file itself.
+POST /extractions              Queue raw files that have no state, or failed.
+
+Review
+GET  /reviews?project=         Review rows, optionally for one project.
 GET  /reviews/{project}/{filename}?engine=
                                Markdown for a file that has not been reviewed.
 GET  /reviews/{project}/{filename}/layout?engine=
@@ -12,6 +21,19 @@ POST /reviews/{project}/{filename}?engine=
                                Save the decision. Approval also replaces
                                markdown.md with the edited text, then updates
                                token_num, approved, and require_chunking.
+
+Ready documents
+GET    /documents?project=     Published, indexed documents of a project.
+GET    /documents/{project}/{filename}
+                               The reviewed markdown of one document.
+GET    /documents/{project}/{filename}/chunks
+                               Its published chunks with token counts.
+GET    /documents/{project}/{filename}/assets/{path}
+GET    /documents/{project}/{filename}/layout
+GET    /documents/{project}/{filename}/source
+DELETE /documents/{project}/{filename}
+                               Remove it from search and processed, so the raw
+                               file returns to having no state.
 """
 
 import mimetypes
@@ -20,20 +42,25 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from data_management.service import ReviewConflict, ReviewService, TokenCountError
+from data_management.dao import close as close_db
+from data_management.library import LibraryService, SearchIndexError
+from data_management.service import Conflict, ReviewService, TokenCountError
+from data_management.store import LAYOUT_NAME
 
 service = ReviewService()
+library = LibraryService()
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     yield
-    service.close()
+    close_db()
 
 
 app = FastAPI(
@@ -49,10 +76,37 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-_FRONTEND_HTML = (
-    Path(__file__).resolve().parent.parent / "frontend" / "data_management" / "index.html"
-)
+_FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
+_FRONTEND_HTML = _FRONTEND_DIR / "index.html"
 _API_BASE_TOKEN = "__API_BASE_URL__"
+_SUPERVISOR_BASE_TOKEN = "__SUPERVISOR_API_URL__"
+
+app.mount("/app", StaticFiles(directory=_FRONTEND_DIR / "app"), name="frontend")
+
+# Service errors become HTTP errors with the message as ``detail``.
+_ERROR_STATUS = {
+    FileNotFoundError: 404,
+    ValueError: 422,
+    Conflict: 409,
+    TokenCountError: 502,
+    SearchIndexError: 502,
+}
+
+
+def _error_handler(status_code: int):
+    async def handle(_request: Request, exc: Exception) -> JSONResponse:
+        return JSONResponse(status_code=status_code, content={"detail": str(exc)})
+
+    return handle
+
+
+for _error, _status in _ERROR_STATUS.items():
+    app.add_exception_handler(_error, _error_handler(_status))
+
+
+# ---------------------------------------------------------------------------
+# Models
+# ---------------------------------------------------------------------------
 
 
 class ReviewRow(BaseModel):
@@ -82,6 +136,84 @@ class ReviewDecision(BaseModel):
     create_time: datetime
 
 
+class FileEntry(BaseModel):
+    name: str
+    path: str = Field(description="Path relative to store/s3/raw, '/'-separated.")
+    kind: str = Field(description="'dir' or 'file'.")
+    modified: datetime
+    size: int | None = None
+    mime_type: str | None = None
+    project: str | None = Field(
+        default=None,
+        description="Set for raw/{project}/{filename}, the only files the pipeline processes.",
+    )
+    supported: bool = False
+    state: str | None = Field(
+        default=None,
+        description="extracting, failed, reviewing, indexing, ready, or null.",
+    )
+    error: str | None = None
+    extractable: bool = False
+
+
+class FileListing(BaseModel):
+    path: str
+    entries: list[FileEntry]
+    truncated: bool
+
+
+class FileRef(BaseModel):
+    project: str
+    filename: str
+
+
+class ExtractionRequest(BaseModel):
+    files: list[FileRef] = Field(min_length=1)
+
+
+class ExtractionResult(FileRef):
+    queued: bool
+    reason: str | None
+
+
+class DocumentRow(BaseModel):
+    project: str
+    filename: str
+    engine: str
+    token_num: int
+    approved: bool = Field(
+        description="True when the reviewed markdown was published; false when the vision model described the file instead."
+    )
+    require_chunking: bool
+    create_time: datetime
+
+
+class ReadyDocument(DocumentRow):
+    mime_type: str | None
+    size: int | None
+    chunk_count: int | None
+
+
+class DocumentDetail(DocumentRow):
+    content: str | None
+    has_layout: bool
+    source_name: str | None
+
+
+class Chunk(BaseModel):
+    id: str
+    semantic_text: str
+    keyword_text: str
+    retrieve_raw_file: bool
+    semantic_tokens: int
+    keyword_tokens: int
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
 def _api_base_url() -> str:
     configured = os.getenv("API_BASE_URL", "").strip().rstrip("/")
     if configured:
@@ -93,48 +225,87 @@ def _api_base_url() -> str:
     return f"http://{host}:{port}"
 
 
-def _call(fn):
-    try:
-        return fn()
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-    except ReviewConflict as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    except TokenCountError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+def _supervisor_api_url() -> str:
+    return (
+        os.getenv("SUPERVISOR_API_URL", "").strip().rstrip("/")
+        or "http://localhost:8002"
+    )
+
+
+def _file(path: Path) -> FileResponse:
+    media_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+    return FileResponse(
+        path,
+        media_type=media_type,
+        filename=path.name,
+        content_disposition_type="inline",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Frontend
+# ---------------------------------------------------------------------------
 
 
 @app.get("/", response_class=HTMLResponse, include_in_schema=False)
 def frontend() -> HTMLResponse:
     html = _FRONTEND_HTML.read_text(encoding="utf-8")
-    return HTMLResponse(html.replace(_API_BASE_TOKEN, _api_base_url()))
+    html = html.replace(_API_BASE_TOKEN, _api_base_url())
+    html = html.replace(_SUPERVISOR_BASE_TOKEN, _supervisor_api_url())
+    return HTMLResponse(html)
+
+
+@app.get("/projects", response_model=list[str])
+def list_projects() -> list[str]:
+    return library.projects()
+
+
+# ---------------------------------------------------------------------------
+# Raw files
+# ---------------------------------------------------------------------------
+
+
+@app.get("/files", response_model=FileListing)
+def browse_files(path: str = "", q: str = "") -> FileListing:
+    """One directory under raw, or every name below it that contains ``q``."""
+    return FileListing.model_validate(library.browse(path, q))
+
+
+@app.get("/files/raw/{path:path}")
+def raw_file(path: str) -> FileResponse:
+    return _file(library.raw_file_path(path))
+
+
+@app.post("/extractions", response_model=list[ExtractionResult])
+def queue_extractions(body: ExtractionRequest) -> list[ExtractionResult]:
+    """Queue raw files for dataprep. Files that cannot be queued say why."""
+    results = library.queue_extractions(
+        [(ref.project, ref.filename) for ref in body.files]
+    )
+    return [ExtractionResult.model_validate(result) for result in results]
+
+
+# ---------------------------------------------------------------------------
+# Review
+# ---------------------------------------------------------------------------
 
 
 @app.get("/reviews", response_model=list[ReviewRow])
-def list_review_files() -> list[ReviewRow]:
+def list_review_files(project: str | None = None) -> list[ReviewRow]:
     """Every file in the review table, decided or not."""
-    return _call(
-        lambda: [ReviewRow.model_validate(row) for row in service.list_files()]
-    )
+    return [ReviewRow.model_validate(row) for row in service.list_files(project)]
 
 
 @app.get("/reviews/{project}/{filename}", response_model=ReviewDetail)
 def open_review(project: str, filename: str, engine: str) -> ReviewDetail:
     """Markdown and layout for a file whose review decision is still empty."""
-    return _call(
-        lambda: ReviewDetail.model_validate(
-            service.open_review(project, filename, engine)
-        )
-    )
+    return ReviewDetail.model_validate(service.open_review(project, filename, engine))
 
 
 @app.get("/reviews/{project}/{filename}/layout")
 def review_layout(project: str, filename: str, engine: str) -> FileResponse:
     """Layout PDF for comparing detected regions with the extracted text."""
-    path = _call(lambda: service.layout_file(project, filename, engine))
-    return FileResponse(path, media_type="application/pdf")
+    return _file(service.layout_file(project, filename, engine))
 
 
 @app.get("/reviews/{project}/{filename}/assets/{asset_path:path}")
@@ -142,9 +313,7 @@ def review_asset(
     project: str, filename: str, engine: str, asset_path: str
 ) -> FileResponse:
     """Serve an image referenced by the markdown under review."""
-    path = _call(lambda: service.asset_file(project, filename, engine, asset_path))
-    media_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
-    return FileResponse(path, media_type=media_type)
+    return _file(service.asset_file(project, filename, engine, asset_path))
 
 
 @app.post("/reviews/{project}/{filename}", response_model=ReviewRow)
@@ -152,15 +321,57 @@ def submit_review(
     project: str, filename: str, engine: str, body: ReviewDecision
 ) -> ReviewRow:
     """Update token_num, approved, and require_chunking after a review."""
-    saved = _call(
-        lambda: service.submit_review(
-            project,
-            filename,
-            engine,
-            approved=body.approved,
-            text=body.text,
-            require_chunking=body.require_chunking,
-            create_time=body.create_time,
-        )
+    saved = service.submit_review(
+        project,
+        filename,
+        engine,
+        approved=body.approved,
+        text=body.text,
+        require_chunking=body.require_chunking,
+        create_time=body.create_time,
     )
     return ReviewRow.model_validate(saved)
+
+
+# ---------------------------------------------------------------------------
+# Ready documents
+# ---------------------------------------------------------------------------
+
+
+@app.get("/documents", response_model=list[ReadyDocument])
+def list_ready_documents(project: str) -> list[ReadyDocument]:
+    """Documents of a project that are published and indexed."""
+    return [ReadyDocument.model_validate(row) for row in library.ready_documents(project)]
+
+
+@app.get("/documents/{project}/{filename}", response_model=DocumentDetail)
+def open_document(project: str, filename: str) -> DocumentDetail:
+    return DocumentDetail.model_validate(library.document(project, filename))
+
+
+@app.get("/documents/{project}/{filename}/chunks", response_model=list[Chunk])
+def document_chunks(project: str, filename: str) -> list[Chunk]:
+    """Published chunks. Token counts are cached until chunks.json changes."""
+    return [Chunk.model_validate(chunk) for chunk in library.chunks(project, filename)]
+
+
+@app.get("/documents/{project}/{filename}/assets/{asset_path:path}")
+def document_asset(project: str, filename: str, asset_path: str) -> FileResponse:
+    return _file(library.document_file(project, filename, asset_path))
+
+
+@app.get("/documents/{project}/{filename}/layout")
+def document_layout(project: str, filename: str) -> FileResponse:
+    return _file(library.document_file(project, filename, LAYOUT_NAME))
+
+
+@app.get("/documents/{project}/{filename}/source")
+def document_source(project: str, filename: str) -> FileResponse:
+    """The PDF or image that was parsed or described."""
+    return _file(library.document_source(project, filename))
+
+
+@app.delete("/documents/{project}/{filename}", status_code=204)
+async def delete_document(project: str, filename: str) -> None:
+    """Remove a ready document from the index and processed, back to raw."""
+    await library.delete_document(project, filename)

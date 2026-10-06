@@ -29,7 +29,12 @@ from common.published import CHUNKS_NAME
 from dataprep.common import const
 from dataprep.common.utils import document_key, document_partitions, parse_document_key
 from dataprep.dao.file_metadata import save_file_metadata
-from dataprep.dao.review import get_review, list_ready_reviews, mark_review_processed
+from dataprep.dao.review import (
+    get_review,
+    list_ready_reviews,
+    mark_review_indexed,
+    mark_review_processed,
+)
 from dataprep.resources.local_doc_store import LocalDocStore
 from dataprep.resources.vlm_extractor import VLMExtractor
 
@@ -350,6 +355,7 @@ async def index(
 ) -> None:
     project, filename = parse_document_key(context.partition_key)
     await _index_chunks(project, filename)
+    mark_review_indexed(project, filename)
     context.log.info("Indexed successfully")
 
 

@@ -18,6 +18,9 @@ service SearchService {
   // Store documents in the index
   rpc Store(StoreRequest) returns (StoreResponse);
 
+  // Remove every indexed chunk of one source file
+  rpc Delete(DeleteRequest) returns (DeleteResponse);
+
   // Store conversation topic summaries in the vector DB
   rpc StoreConvTopics(StoreConvTopicsRequest) returns (StoreConvTopicsResponse);
 
@@ -63,6 +66,18 @@ message StoreRequest {
 
 // Store response
 message StoreResponse {
+  StatusCode status = 1;
+  string error = 2;
+}
+
+// Delete request naming the source file whose chunks are removed
+message DeleteRequest {
+  string project = 1;
+  string source_file_name = 2;
+}
+
+// Delete response
+message DeleteResponse {
   StatusCode status = 1;
   string error = 2;
 }

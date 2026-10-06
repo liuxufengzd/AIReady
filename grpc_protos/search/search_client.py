@@ -153,6 +153,21 @@ class SearchClient:
         if response.status != search_pb2.OK:
             raise RuntimeError(f"[{self.project}] Store failed: {response.error}")
 
+    async def delete(self, source_file_name: str) -> None:
+        """Remove every indexed chunk of a file.
+
+        Args:
+            source_file_name: Name of the source file to drop from the index.
+        """
+        stub = self._ensure_connected()
+        request = search_pb2.DeleteRequest(
+            project=self.project,
+            source_file_name=source_file_name,
+        )
+        response: search_pb2.DeleteResponse = await stub.Delete(request)
+        if response.status != search_pb2.OK:
+            raise RuntimeError(f"[{self.project}] Delete failed: {response.error}")
+
     # ------------------------------------------------------------------
     # Conversation history
     # ------------------------------------------------------------------

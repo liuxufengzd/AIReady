@@ -39,6 +39,11 @@ class Importer:
         extension = _file_extension(self.project, source_file_name)
         await self._index(source_file_name, chunks, extension)
 
+    async def remove(self, source_file_name: str) -> None:
+        """Delete every indexed chunk of one source file."""
+        logger.info("[%s] Removing %s from the index", self.project, source_file_name)
+        await self._delete(source_file_name)
+
     async def _index(
         self,
         filename: str,
@@ -48,8 +53,7 @@ class Importer:
         logger.info("[%s] Indexing %s (%s chunks)", self.project, filename, len(chunks))
 
         # Replace any previous index for this file.
-        await self.semantic_client.delete({"_file_name": filename})
-        await self.keyword_client.delete({"_file_name": filename})
+        await self._delete(filename)
 
         filters = _index_filters(extension)
         semantic_docs: list[Document] = []
@@ -70,6 +74,10 @@ class Importer:
             self.semantic_client.store(semantic_docs),
             self.keyword_client.store(keyword_docs),
         )
+
+    async def _delete(self, filename: str) -> None:
+        await self.semantic_client.delete({"_file_name": filename})
+        await self.keyword_client.delete({"_file_name": filename})
 
     async def _close(self) -> None:
         await self.keyword_client.close()

@@ -45,6 +45,11 @@ class SearchServiceStub(object):
                 request_serializer=search__pb2.StoreRequest.SerializeToString,
                 response_deserializer=search__pb2.StoreResponse.FromString,
                 _registered_method=True)
+        self.Delete = channel.unary_unary(
+                '/search.SearchService/Delete',
+                request_serializer=search__pb2.DeleteRequest.SerializeToString,
+                response_deserializer=search__pb2.DeleteResponse.FromString,
+                _registered_method=True)
         self.StoreConvTopics = channel.unary_unary(
                 '/search.SearchService/StoreConvTopics',
                 request_serializer=search__pb2.StoreConvTopicsRequest.SerializeToString,
@@ -75,6 +80,13 @@ class SearchServiceServicer(object):
 
     def Store(self, request, context):
         """Store documents in the index
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def Delete(self, request, context):
+        """Remove every indexed chunk of one source file
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -113,6 +125,11 @@ def add_SearchServiceServicer_to_server(servicer, server):
                     servicer.Store,
                     request_deserializer=search__pb2.StoreRequest.FromString,
                     response_serializer=search__pb2.StoreResponse.SerializeToString,
+            ),
+            'Delete': grpc.unary_unary_rpc_method_handler(
+                    servicer.Delete,
+                    request_deserializer=search__pb2.DeleteRequest.FromString,
+                    response_serializer=search__pb2.DeleteResponse.SerializeToString,
             ),
             'StoreConvTopics': grpc.unary_unary_rpc_method_handler(
                     servicer.StoreConvTopics,
@@ -185,6 +202,33 @@ class SearchService(object):
             '/search.SearchService/Store',
             search__pb2.StoreRequest.SerializeToString,
             search__pb2.StoreResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def Delete(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/search.SearchService/Delete',
+            search__pb2.DeleteRequest.SerializeToString,
+            search__pb2.DeleteResponse.FromString,
             options,
             channel_credentials,
             insecure,

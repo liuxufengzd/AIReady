@@ -86,6 +86,22 @@ class StoreResponse(_message.Message):
     error: str
     def __init__(self, status: _Optional[_Union[StatusCode, str]] = ..., error: _Optional[str] = ...) -> None: ...
 
+class DeleteRequest(_message.Message):
+    __slots__ = ("project", "source_file_name")
+    PROJECT_FIELD_NUMBER: _ClassVar[int]
+    SOURCE_FILE_NAME_FIELD_NUMBER: _ClassVar[int]
+    project: str
+    source_file_name: str
+    def __init__(self, project: _Optional[str] = ..., source_file_name: _Optional[str] = ...) -> None: ...
+
+class DeleteResponse(_message.Message):
+    __slots__ = ("status", "error")
+    STATUS_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    status: StatusCode
+    error: str
+    def __init__(self, status: _Optional[_Union[StatusCode, str]] = ..., error: _Optional[str] = ...) -> None: ...
+
 class ConvTopic(_message.Message):
     __slots__ = ("content", "thread_id")
     CONTENT_FIELD_NUMBER: _ClassVar[int]

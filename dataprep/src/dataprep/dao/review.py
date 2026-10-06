@@ -16,6 +16,7 @@ CREATE TABLE IF NOT EXISTS review (
     create_time TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     approved BOOLEAN,
     require_chunking BOOLEAN NOT NULL DEFAULT FALSE,
+    indexed BOOLEAN NOT NULL DEFAULT FALSE,
     processed BOOLEAN NOT NULL DEFAULT FALSE,
     PRIMARY KEY (project, filename, engine)
 )
@@ -23,15 +24,16 @@ CREATE TABLE IF NOT EXISTS review (
 
 _UPSERT_REVIEW = """
 INSERT INTO review (
-    project, filename, token_num, engine, create_time, approved, require_chunking, processed
+    project, filename, token_num, engine, create_time, approved, require_chunking, processed, indexed
 )
-VALUES (%s, %s, %s, %s, NOW(), NULL, FALSE, FALSE)
+VALUES (%s, %s, %s, %s, NOW(), NULL, FALSE, FALSE, FALSE)
 ON CONFLICT (project, filename, engine) DO UPDATE
 SET token_num = %s,
     create_time = NOW(),
     approved = NULL,
     require_chunking = FALSE,
-    processed = FALSE
+    processed = FALSE,
+    indexed = FALSE
 """
 
 _SELECT_READY = """
@@ -54,6 +56,12 @@ WHERE project = %s AND filename = %s AND engine = %s
   AND create_time = %s
   AND approved IS NOT NULL
   AND processed = FALSE
+"""
+
+_MARK_INDEXED = """
+UPDATE review
+SET indexed = TRUE
+WHERE project = %s AND filename = %s AND processed = TRUE
 """
 
 
@@ -98,3 +106,13 @@ def mark_review_processed(
     return _db.execute_rowcount(
         _MARK_PROCESSED, (project, filename, engine, create_time)
     )
+
+
+def mark_review_indexed(project: str, filename: str) -> None:
+    """Record that search holds the published chunks of this file.
+
+    Matched by file rather than engine, so a rerun of ``index`` alone, which
+    may carry no engine tag, still marks the row.
+    """
+    _ensure_review_table()
+    _db.execute(_MARK_INDEXED, (project, filename))

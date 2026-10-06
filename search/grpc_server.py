@@ -48,6 +48,21 @@ class SearchServiceServicer(search_pb2_grpc.SearchServiceServicer):
             logger.exception(f"[{request.project}] Store failed: {e}")
             return search_pb2.StoreResponse(status=search_pb2.INTERNAL, error=str(e))
 
+    async def Delete(
+        self, request: search_pb2.DeleteRequest, _context: grpc.ServicerContext
+    ) -> search_pb2.DeleteResponse:
+        if not request.source_file_name:
+            return search_pb2.DeleteResponse(
+                status=search_pb2.INVALID_ARGUMENT, error="source_file_name is required"
+            )
+        try:
+            async with Importer(request.project) as importer:
+                await importer.remove(request.source_file_name)
+            return search_pb2.DeleteResponse(status=search_pb2.OK)
+        except Exception as e:
+            logger.exception(f"[{request.project}] Delete failed: {e}")
+            return search_pb2.DeleteResponse(status=search_pb2.INTERNAL, error=str(e))
+
     async def Query(
         self, request: search_pb2.QueryRequest, _context: grpc.ServicerContext
     ) -> search_pb2.QueryResponse:

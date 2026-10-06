@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AI Ready Console</title>
+
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script>
+    /* Babel 8 defaults to automatic JSX runtime (generates `import` statements),
+       which breaks UMD builds. Register a preset that forces the classic runtime
+       (React.createElement) so the compiled code works as a plain script. */
+    Babel.registerPreset("classic-react", {
+      presets: [[Babel.availablePresets["react"], { runtime: "classic" }]],
+    });
+  </script>
+  <script src="https://cdn.jsdelivr.net/npm/marked@13/marked.min.js"></script>
+  <script>
+    /* data_management/app.py replaces these tokens when it serves this page. */
+    window.APP_CONFIG = {
+      apiBase: "__API_BASE_URL__",
+      supervisorBase: "__SUPERVISOR_API_URL__",
+    };
+  </script>
+  <link rel="stylesheet" href="app/styles.css" />
+</head>
+<body class="bg-slate-50 antialiased">
+  <div id="root"></div>
+
+  <!-- Loaded in order. common.jsx defines the shared helpers the pages use. -->
+  <script type="text/babel" data-presets="classic-react" src="app/common.jsx"></script>
+  <script type="text/babel" data-presets="classic-react" src="app/files.jsx"></script>
+  <script type="text/babel" data-presets="classic-react" src="app/review.jsx"></script>
+  <script type="text/babel" data-presets="classic-react" src="app/ready.jsx"></script>
+  <script type="text/babel" data-presets="classic-react" src="app/assistant.jsx"></script>
+  <script type="text/babel" data-presets="classic-react" src="app/main.jsx"></script>
+</body>
+</html>
