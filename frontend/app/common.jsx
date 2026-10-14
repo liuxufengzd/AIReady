@@ -306,13 +306,78 @@ function ConfirmDialog({ title, children, confirmLabel, onConfirm, onCancel, bus
   );
 }
 
-/** Rendered markdown. ``resolveAsset`` turns a relative image path into a URL. */
+// ── Markdown ────────────────────────────────────────────────────────────────
+
+function escapeHtml(s) {
+  return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+function renderMath(tex, displayMode) {
+  if (window.katex) {
+    try {
+      return katex.renderToString(tex, { displayMode, throwOnError: false, strict: "ignore", output: "html" });
+    } catch { /* fall back to the source */ }
+  }
+  return escapeHtml(displayMode ? `$$${tex}$$` : `$${tex}$`);
+}
+
+/* Pre-rendered HTML is swapped out for private-use tokens so marked leaves it
+   alone. Block tokens may replace the <p> marked wraps around them. */
+const INLINE_TOKEN = "\uE000";
+const BLOCK_TOKEN = "\uE002";
+const TOKEN_END = "\uE001";
+const TOKEN_RE = /[\uE000\uE002](\d+)\uE001/g;
+const TOKEN_PARAGRAPH_RE = /<p>\s*(\uE002\d+\uE001)\s*<\/p>/g;
+
+/* Extractors (MinerU) describe pictures as <Image><ID>n</ID><Content>markdown</Content></Image>. */
+const IMAGE_TAG_RE = /<Image>\s*(?:<ID>([\s\S]*?)<\/ID>)?\s*(?:<Content>([\s\S]*?)<\/Content>)?\s*<\/Image>/gi;
+const TABLE_CELL_RE = /(<t[dh]\b[^>]*>)([\s\S]*?)(<\/t[dh]>)/gi;
+const CODE_RE = /(```[\s\S]*?```|~~~[\s\S]*?~~~|`[^`\n]+`)/;
+
+function imageFigure(id, content) {
+  const label = id && id.trim() ? `Image ${escapeHtml(id.trim())}` : "Image";
+  const body = content && content.trim() ? `<div class="md-figure-body">${marked.parse(content.trim())}</div>` : "";
+  return `<div class="md-figure"><div class="md-figure-label">${label} · description</div>${body}</div>`;
+}
+
+function prepareMarkdown(text) {
+  const fragments = [];
+  const keep = (html, block) => `${block ? BLOCK_TOKEN : INLINE_TOKEN}${fragments.push(html) - 1}${TOKEN_END}`;
+  const transform = (src) => src
+    .replace(/\$\$([\s\S]+?)\$\$/g, (_, tex) => keep(renderMath(tex, true), true))
+    .replace(/\\\[([\s\S]+?)\\\]/g, (_, tex) => keep(renderMath(tex, true), true))
+    .replace(/\\\(([\s\S]+?)\\\)/g, (_, tex) => keep(renderMath(tex, false)))
+    .replace(/(?<!\\)\$(?!\s)((?:\\.|[^$\\\n])+?)(?<!\s)\$(?!\d)/g, (_, tex) => keep(renderMath(tex, false)))
+    .replace(IMAGE_TAG_RE, (_, id, content) => keep(imageFigure(id, content), true))
+    // Raw HTML cells are not parsed as markdown, and a blank line inside one ends the HTML block.
+    .replace(TABLE_CELL_RE, (match, open, inner, close) => {
+      const body = inner.trim();
+      if (!/\n|\*\*/.test(body)) return match;
+      return open + keep(marked.parse(body), true) + close;
+    });
+  const source = String(text).split(CODE_RE).map((part, i) => (i % 2 ? part : transform(part))).join("");
+  return { source, fragments };
+}
+
+function restoreFragments(html, fragments) {
+  let out = html.replace(TOKEN_PARAGRAPH_RE, "$1");
+  for (let depth = 0; depth < 8 && /[\uE000\uE002]\d+\uE001/.test(out); depth += 1) {
+    out = out.replace(TOKEN_RE, (_, i) => fragments[Number(i)] ?? "").replace(TOKEN_PARAGRAPH_RE, "$1");
+  }
+  return out;
+}
+
+/** Rendered markdown with math. ``resolveAsset`` turns a relative image path into a URL. */
 function MdPreview({ text, resolveAsset, className = "", empty = "No content available." }) {
   const html = useMemo(() => {
     if (!text || !text.trim()) return `<p style="color:#94a3b8;font-style:italic">${empty}</p>`;
     let rendered;
-    try { rendered = marked.parse(text); }
-    catch { rendered = `<pre style="white-space:pre-wrap">${text}</pre>`; }
+    try {
+      const { source, fragments } = prepareMarkdown(text);
+      rendered = restoreFragments(marked.parse(source), fragments);
+    } catch {
+      rendered = `<pre style="white-space:pre-wrap">${escapeHtml(text)}</pre>`;
+    }
     rendered = rendered.replace(/<a\s+href=/gi, '<a target="_blank" rel="noopener noreferrer" href=');
     if (!resolveAsset) return rendered;
     return rendered.replace(/(<img\b[^>]*\bsrc=["'])([^"']+)(["'])/gi, (match, pre, src, post) => {
