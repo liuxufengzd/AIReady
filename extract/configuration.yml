@@ -1,0 +1,10 @@
+source:
+  folder: "extract/input"
+  pattern: "（大阪1SC）9700日本パーカライジング伝言メモ.pdf"
+extractor:
+  parser:
+    type: "mineru"
+  model: "gemini-3.8-flash"
+  schema: "MessageMemo"
+output:
+  folder: "extract/output/mineru"

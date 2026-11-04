@@ -170,9 +170,11 @@ uv.lock
 out/
 
 # store
+input/
 store/
 compare/
 output/
 experiment/input/
 dataprep/.dg/
 blobs/
+ground_truth/
