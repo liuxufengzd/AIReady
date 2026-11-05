@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import json
 import logging
 from pathlib import Path
@@ -9,14 +10,23 @@ from pydantic import BaseModel
 
 import schemas
 from parsers.parser_base import ParserBase
-from prompts import SYSTEM_PROMPT
+from prompts import DIRECT_SYSTEM_PROMPT, SYSTEM_PROMPT
 
 logger = logging.getLogger(__name__)
 
+DIRECT_MIME_TYPES = {
+    ".pdf": "application/pdf",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+}
 
-def _create_parser(configuration: dict) -> ParserBase:
+
+def _create_parser(configuration: dict) -> ParserBase | None:
     options = dict(configuration)
     parser_type = options.pop("type")
+    if parser_type == "direct":
+        return None
     if parser_type == "llamaparse":
         from parsers.llamaparse_parser import LlamaParseParser
 
@@ -78,16 +88,13 @@ class Extractor:
         return extracted
 
     async def _extract_file(self, file_path: Path) -> BaseModel:
-        logger.info("Parsing %s", file_path.name)
-        markdown = await self.parser.parse(file_path)
-        (self.output_folder / f"{file_path.stem}.md").write_text(
-            markdown, encoding="utf-8"
-        )
+        if self.parser is None:
+            messages = self._build_direct_messages(file_path)
+        else:
+            messages = await self._build_parsed_messages(file_path)
 
         logger.info("Extracting %s", file_path.name)
-        result = await self.llm.ainvoke(
-            [SystemMessage(content=SYSTEM_PROMPT), HumanMessage(content=markdown)]
-        )
+        result = await self.llm.ainvoke(messages)
         (self.output_folder / f"{file_path.stem}.json").write_text(
             json.dumps(
                 result.model_dump(mode="json", by_alias=True),
@@ -98,3 +105,27 @@ class Extractor:
         )
         logger.info("Saved %s", file_path.stem)
         return result
+
+    async def _build_parsed_messages(self, file_path: Path) -> list:
+        logger.info("Parsing %s", file_path.name)
+        markdown = await self.parser.parse(file_path)
+        (self.output_folder / f"{file_path.stem}.md").write_text(
+            markdown, encoding="utf-8"
+        )
+        return [SystemMessage(content=SYSTEM_PROMPT), HumanMessage(content=markdown)]
+
+    @staticmethod
+    def _build_direct_messages(file_path: Path) -> list:
+        mime_type = DIRECT_MIME_TYPES.get(file_path.suffix.lower())
+        if mime_type is None:
+            raise ValueError(
+                f"Direct extraction does not support {file_path.suffix}: {file_path.name}"
+            )
+        block_type = "image" if mime_type.startswith("image/") else "file"
+        data = base64.b64encode(file_path.read_bytes()).decode("ascii")
+        return [
+            SystemMessage(content=DIRECT_SYSTEM_PROMPT),
+            HumanMessage(
+                content=[{"type": block_type, "base64": data, "mime_type": mime_type}]
+            ),
+        ]

@@ -11,6 +11,12 @@ test:
         model: "gemini-3.8-flash"
         schema: "MessageMemo"
       path: "extract/output/llamaparse"
+
+    - parser:
+        type: "direct"
+        model: "gemini-3.8-flash"
+        schema: "MessageMemo"
+      path: "extract/output/direct"
   llm_as_a_judge:
     model: "gemini-3.8-flash"
     threshold_score: 4
